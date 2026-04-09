@@ -1,0 +1,24 @@
+CREATE TABLE refresh_tokens (
+    id UUID PRIMARY KEY,
+
+    user_id UUID NOT NULL,
+    client_id UUID NOT NULL,
+    session_id UUID NOT NULL,
+
+    token_hash TEXT UNIQUE NOT NULL,
+
+    expires_at TIMESTAMP,
+    revoked BOOLEAN DEFAULT FALSE,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_refresh_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+
+    CONSTRAINT fk_refresh_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
+
+    CONSTRAINT fk_refresh_session FOREIGN KEY (session_id) REFERENCES user_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_session_id ON refresh_tokens(session_id);
+CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);

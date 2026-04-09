@@ -1,0 +1,28 @@
+CREATE TABLE clients (
+    id UUID PRIMARY KEY,
+
+    client_id VARCHAR(255) UNIQUE NOT NULL,
+    client_secret TEXT,
+
+    name VARCHAR(255),
+
+    type VARCHAR(50) CHECK (type IN ('confidential', 'public'))
+
+    grant_types TEXT,
+    response_types TEXT,
+    scopes TEXT,
+
+    pkce_required BOOLEAN DEFAULT TRUE,
+
+    enabled BOOLEAN DEFAULT TRUE,
+    base_url TEXT,
+    description TEXT,
+
+    access_token_ttl INT,
+    refresh_token_ttl INT,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_clients_client_id ON clients(client_id);
