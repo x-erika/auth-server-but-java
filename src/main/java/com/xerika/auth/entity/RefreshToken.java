@@ -1,6 +1,7 @@
 package com.xerika.auth.entity;
 
 import jakarta.persistence.*;
+
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -9,6 +10,7 @@ import java.util.UUID;
 public class RefreshToken {
 
     @Id
+    @Column(name = "id", nullable = false)
     public UUID id;
 
     @ManyToOne
@@ -23,11 +25,15 @@ public class RefreshToken {
     @JoinColumn(name = "session_id", nullable = false)
     public UserSession session;
 
-    @Column(unique = true, nullable = false)
+    @Column(name = "token_hash", unique = true, nullable = false, columnDefinition = "TEXT")
     public String tokenHash;
 
+    @Column(name = "expires_at")
     public LocalDateTime expiresAt;
+
+    @Column(name = "revoked")
     public boolean revoked;
 
+    @Column(name = "created_at")
     public LocalDateTime createdAt;
 }
