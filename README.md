@@ -1,62 +1,120 @@
 # auth-server-but-java
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+OAuth 2.0 + OpenID Connect authorization server, built on Quarkus.
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+Implements the six core auth primitives: **OAuth2, OIDC, JWT, PKCE, RBAC, SSO** — runnable end-to-end with admin bootstrap, browser-based login, and a companion Next.js admin UI ([`auth-admin-but-java`](../auth-admin-but-java)).
 
-## Running the application in dev mode
+## Quick start
 
-You can run your application in dev mode that enables live coding using:
+```bash
+# 1. Postgres running locally (port + DB name configurable; defaults below)
+docker run -d --name auth-pg \
+  -p 15552:5432 \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=erika \
+  -e POSTGRES_DB=xerika-java \
+  postgres:16
 
-```shell script
+# 2. Start the auth server (dev mode with live reload)
 ./mvnw quarkus:dev
+# → Listening on http://localhost:8080
+# → Bootstrap admin: admin@gmail.com / admin123
+# → RSA keypair generated at ~/.xerika/auth/keys/
+
+# 3. Try the browser flow
+open http://localhost:8080/login
 ```
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+Defaults from `application.properties` (override via env vars):
 
-## Packaging and running the application
+| Property | Default | Env var |
+|---|---|---|
+| `quarkus.datasource.jdbc.url` | `jdbc:postgresql://localhost:15552/xerika-java?sslmode=disable` | `DB_URL` |
+| `quarkus.datasource.username` | `postgres` | `DB_USER` |
+| `quarkus.datasource.password` | `erika` | `DB_PASS` |
+| `auth.issuer.url` | `http://localhost:8080` | — |
+| `auth.jwt.access-token-ttl-seconds` | `900` | — |
+| `auth.jwt.id-token-ttl-seconds` | `3600` | — |
+| `auth.jwt.keys.dir` | `~/.xerika/auth/keys` | — |
 
-The application can be packaged using:
+## Documentation
 
-```shell script
-./mvnw package
+| File | Contents |
+|---|---|
+| [`API.md`](./API.md) | Endpoint reference (request/response shapes, curl examples, end-to-end OAuth walkthrough) |
+| `src/main/resources/db/migration/` | Flyway migrations (V1 schema → V4 device codes) |
+
+## Feature coverage
+
+| Feature | Coverage | What's implemented | What's deferred |
+|---|---|---|---|
+| **OAuth 2.0** | 100% | authorization_code, refresh_token (with rotation), client_credentials, device_code (RFC 8628), revoke (RFC 7009), introspect (RFC 7662) | — |
+| **OIDC** | 92% | id_token, /userinfo, discovery doc, JWKS, RP-initiated logout, nonce, auth_time, prompt, max_age | consent screen, request object, claims parameter |
+| **JWT** | 90% | RS256 with persistent RSA keypair, full claims (iss/sub/aud/exp/iat/jti/...), JwtValidator, kid header | multi-key rotation |
+| **PKCE** | 90% | S256 + plain, enforced for public clients | — |
+| **RBAC** | 90% | Role entity + assignment, `@RequiresRole` filter, `@RequiresScope` (JWT scope-based), roles claim in JWT, admin endpoints to manage role assignment | role hierarchy |
+| **SSO** | 65% | Shared session (cookie + Bearer), browser-redirect OAuth flow, RP-initiated logout, auth_time + sid in tokens | consent screen, back-channel logout, front-channel logout |
+
+## Architecture
+
+Package-by-feature layout under `com.xerika.auth`:
+
+```
+admin/          GET/POST/DELETE /admin/* — user & role administration
+bootstrap/      Idempotent startup seeders (admin user, roles, default clients)
+client/         OAuth client entity + repository + redirect URIs
+common/
+  crypto/         Argon2Hasher, JwtSigner, JwtValidator, RsaKeyProvider, Sha256, RandomTokens
+  web/            BearerExtractor (header + cookie token resolution)
+login/          /auth/login (JSON) + /login (HTML, Qute) + LoginService
+oauth/
+  authorize/      AuthorizeFlow, AuthCodeStore (DB-backed), AuthorizationCode
+  device/         DeviceFlow, DeviceAuthorization (RFC 8628)
+  logout/         LogoutFlow (RP-initiated)
+  pkce/           PkceVerifier (S256 + plain)
+  token/          TokenFlow, TokenIssuer, RefreshToken, IntrospectFlow, RevokeFlow
+  OAuthResource   /oauth/* JAX-RS endpoints
+  Scopes          shared parse/subset utility
+  RequiresScope   annotation + ScopeFilter (JWT-based authz)
+oidc/           /userinfo, /.well-known/openid-configuration, /.well-known/jwks.json
+role/           Role + RoleRepository + @RequiresRole + RoleFilter (session-based authz)
+session/        UserSession + SessionService (8-hour TTL)
+signup/         /auth/signup + /auth/verify-email + EmailVerification
+user/           User + Credential entities + repositories
 ```
 
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+Each subpackage is self-contained: entity, repository, flow/service, and DTOs all live next to each other, not split by layer.
 
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
+## Token model
 
-If you want to build an _über-jar_, execute the following command:
+- **Session token** (opaque, 8h) — for browser/admin sessions. Accepted via `Authorization: Bearer`, `X-Session-Token` header, or `session_token` cookie.
+- **Access token** (JWT RS256, 15min) — for resource server APIs. Carries `sub`, `aud`, `iss`, `exp`, `iat`, `jti`, `scope`, `roles`, `sid`, `email`, `username`.
+- **Refresh token** (opaque, 30 days, hashed in DB) — rotated on each use.
+- **ID token** (JWT RS256, 1h) — OIDC identity assertion, issued only with `openid` scope.
 
-```shell script
-./mvnw package -Dquarkus.package.jar.type=uber-jar
+JWTs are signed with a persistent RSA-2048 keypair stored at `~/.xerika/auth/keys/`. The matching public key is published at `/.well-known/jwks.json` with a deterministic `kid` (SHA-256 fingerprint).
+
+## Running tests
+
+```bash
+./mvnw test
 ```
 
-The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
+29 unit tests covering Argon2 round-trips, SHA-256 properties, scope parsing, PKCE verification, random token uniqueness. No DB required — pure-function tests.
 
-## Creating a native executable
+## Project status
 
-You can create a native executable using:
+This is a **learning project** showcasing the core auth primitives. It is **not production-ready**:
 
-```shell script
-./mvnw package -Dnative
-```
+- Tokens issued under one keypair are invalidated when the keypair file is deleted (no key rotation strategy)
+- No consent screen — users implicitly authorize all requested scopes
+- Email verification token is returned in the signup API response (in production, would be emailed)
+- No rate limiting / brute-force protection
+- No audit log
+- Default bootstrap credentials are committed to the repo (`admin@gmail.com / admin123`, `service-client / service-secret-change-me`)
 
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+See `API.md` § "Deferred" notes for the full list of unfinished items.
 
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
-```
+---
 
-You can then execute your native executable with: `./target/auth-server-but-java-1.0.0-SNAPSHOT-runner`
-
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
-
-## Provided Code
-
-### REST
-
-Easily start your REST Web Services
-
-[Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+Built with Quarkus 3.30, Java 21, PostgreSQL 16, Flyway, Hibernate ORM, BouncyCastle (Argon2), Smallrye JWT Build, Qute (templates).
