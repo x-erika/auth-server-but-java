@@ -2,7 +2,7 @@
 
 OAuth 2.0 + OpenID Connect authorization server, built on Quarkus.
 
-Implements the six core auth primitives: **OAuth2, OIDC, JWT, PKCE, RBAC, SSO** — runnable end-to-end with admin bootstrap, browser-based login, and a companion Next.js admin UI ([`auth-admin-but-java`](../auth-admin-but-java)).
+Implements the six core auth primitives: **OAuth2, OIDC, JWT, PKCE, RBAC, SSO** — runnable end-to-end with admin bootstrap, browser-based login, and a companion Next.js admin UI ([`auth-admin-but-java`](https://github.com/x-erika/auth-admin-but-java)).
 
 ## Quick start
 
