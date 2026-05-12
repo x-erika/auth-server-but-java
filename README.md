@@ -6,36 +6,18 @@ Implements the six core auth primitives: **OAuth2, OIDC, JWT, PKCE, RBAC, SSO** 
 
 ## Quick start
 
+Point at a Postgres instance (override via `DB_URL` / `DB_USER` / `DB_PASS` or
+edit `application.properties`), then:
+
 ```bash
-# 1. Postgres running locally (port + DB name configurable; defaults below)
-docker run -d --name auth-pg \
-  -p 15552:5432 \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=erika \
-  -e POSTGRES_DB=xerika-java \
-  postgres:16
-
-# 2. Start the auth server (dev mode with live reload)
 ./mvnw quarkus:dev
-# → Listening on http://localhost:8080
-# → Bootstrap admin: admin@gmail.com / admin123
-# → RSA keypair generated at ~/.xerika/auth/keys/
-
-# 3. Try the browser flow
-open http://localhost:8080/login
 ```
 
-Defaults from `application.properties` (override via env vars):
-
-| Property | Default | Env var |
-|---|---|---|
-| `quarkus.datasource.jdbc.url` | `jdbc:postgresql://localhost:15552/xerika-java?sslmode=disable` | `DB_URL` |
-| `quarkus.datasource.username` | `postgres` | `DB_USER` |
-| `quarkus.datasource.password` | `erika` | `DB_PASS` |
-| `auth.issuer.url` | `http://localhost:8080` | — |
-| `auth.jwt.access-token-ttl-seconds` | `900` | — |
-| `auth.jwt.id-token-ttl-seconds` | `3600` | — |
-| `auth.jwt.keys.dir` | `~/.xerika/auth/keys` | — |
+On first boot the server runs all Flyway migrations, seeds the `admin` and
+`user` roles plus a bootstrap admin account, generates an RSA-2048 keypair
+under `~/.xerika/auth/keys/`, and starts listening on
+[`http://localhost:8080`](http://localhost:8080) with `/login` as the browser
+entry point.
 
 ## Documentation
 
