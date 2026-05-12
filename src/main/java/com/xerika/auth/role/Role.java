@@ -21,6 +21,9 @@ public class Role {
     @Column(name = "description", columnDefinition = "TEXT")
     public String description;
 
+    @Column(name = "parent_id")
+    public UUID parentId;
+
     @Column(name = "created_at")
     public LocalDateTime createdAt;
 

@@ -21,57 +21,137 @@ import java.security.PublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 @ApplicationScoped
 public class RsaKeyProvider {
 
     private static final Logger LOG = Logger.getLogger(RsaKeyProvider.class);
+    private static final String ACTIVE_KID_FILE = "active.kid";
 
     @ConfigProperty(name = "auth.jwt.keys.dir")
     Optional<String> keysDirConfig;
 
-    private PrivateKey privateKey;
-    private PublicKey publicKey;
-    private String keyId;
+    private final Map<String, KeyPair> keysByKid = new LinkedHashMap<>();
+    private String activeKid;
 
     @PostConstruct
     void init() {
         try {
             Path dir = resolveKeysDir();
-            Path privatePath = dir.resolve("private.pem");
-            Path publicPath = dir.resolve("public.pem");
+            Files.createDirectories(dir);
 
-            if (Files.exists(privatePath) && Files.exists(publicPath)) {
-                this.privateKey = loadPrivateKey(privatePath);
-                this.publicKey = loadPublicKey(publicPath);
-                LOG.infof("Loaded RSA keypair from %s", dir);
-            } else {
-                KeyPair keyPair = generateKeyPair();
-                this.privateKey = keyPair.getPrivate();
-                this.publicKey = keyPair.getPublic();
-                Files.createDirectories(dir);
-                writePem(privatePath, "PRIVATE KEY", privateKey.getEncoded());
-                writePem(publicPath, "PUBLIC KEY", publicKey.getEncoded());
-                LOG.infof("Generated RSA keypair at %s", dir);
+            loadExistingKeys(dir);
+
+            Path activeKidFile = dir.resolve(ACTIVE_KID_FILE);
+            if (Files.exists(activeKidFile)) {
+                String stored = Files.readString(activeKidFile).trim();
+                if (keysByKid.containsKey(stored)) {
+                    activeKid = stored;
+                }
             }
 
-            this.keyId = computeKid(publicKey);
+            if (activeKid == null) {
+                // Either bootstrap fresh, or migrate legacy private.pem/public.pem
+                Path legacyPriv = dir.resolve("private.pem");
+                Path legacyPub = dir.resolve("public.pem");
+                if (Files.exists(legacyPriv) && Files.exists(legacyPub) && keysByKid.isEmpty()) {
+                    KeyPair legacy = new KeyPair(loadPublicKey(legacyPub), loadPrivateKey(legacyPriv));
+                    String kid = computeKid(legacy.getPublic());
+                    keysByKid.put(kid, legacy);
+                    writeKeyFiles(dir, kid, legacy);
+                    Files.deleteIfExists(legacyPriv);
+                    Files.deleteIfExists(legacyPub);
+                    LOG.infof("Migrated legacy keypair to kid=%s", kid);
+                }
+
+                if (keysByKid.isEmpty()) {
+                    KeyPair generated = generateKeyPair();
+                    String kid = computeKid(generated.getPublic());
+                    writeKeyFiles(dir, kid, generated);
+                    keysByKid.put(kid, generated);
+                    LOG.infof("Generated initial RSA keypair kid=%s", kid);
+                }
+
+                activeKid = keysByKid.keySet().iterator().next();
+                Files.writeString(activeKidFile, activeKid, StandardCharsets.US_ASCII);
+            }
+
+            LOG.infof("RSA key set: %d total, active=%s", keysByKid.size(), activeKid);
         } catch (Exception e) {
             throw new IllegalStateException("RSA key bootstrap failed", e);
         }
     }
 
     public PrivateKey privateKey() {
-        return privateKey;
+        return keysByKid.get(activeKid).getPrivate();
     }
 
     public PublicKey publicKey() {
-        return publicKey;
+        return keysByKid.get(activeKid).getPublic();
     }
 
     public String keyId() {
-        return keyId;
+        return activeKid;
+    }
+
+    public Map<String, PublicKey> allPublicKeys() {
+        Map<String, PublicKey> result = new LinkedHashMap<>();
+        for (Map.Entry<String, KeyPair> e : keysByKid.entrySet()) {
+            result.put(e.getKey(), e.getValue().getPublic());
+        }
+        return result;
+    }
+
+    public Optional<PublicKey> publicKeyByKid(String kid) {
+        KeyPair pair = kid == null ? null : keysByKid.get(kid);
+        return Optional.ofNullable(pair).map(KeyPair::getPublic);
+    }
+
+    public synchronized String rotate() {
+        try {
+            Path dir = resolveKeysDir();
+            KeyPair generated = generateKeyPair();
+            String kid = computeKid(generated.getPublic());
+            writeKeyFiles(dir, kid, generated);
+            keysByKid.put(kid, generated);
+            activeKid = kid;
+            Files.writeString(dir.resolve(ACTIVE_KID_FILE), kid, StandardCharsets.US_ASCII);
+            LOG.infof("Rotated active signing key to kid=%s", kid);
+            return kid;
+        } catch (Exception e) {
+            throw new IllegalStateException("Key rotation failed", e);
+        }
+    }
+
+    private void loadExistingKeys(Path dir) throws IOException, GeneralSecurityException {
+        if (!Files.exists(dir)) {
+            return;
+        }
+        try (Stream<Path> stream = Files.list(dir)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                String name = p.getFileName().toString();
+                if (!name.endsWith(".private.pem")) {
+                    continue;
+                }
+                String kid = name.substring(0, name.length() - ".private.pem".length());
+                Path pub = dir.resolve(kid + ".public.pem");
+                if (!Files.exists(pub)) {
+                    continue;
+                }
+                PrivateKey priv = loadPrivateKey(p);
+                PublicKey pubKey = loadPublicKey(pub);
+                keysByKid.put(kid, new KeyPair(pubKey, priv));
+            }
+        }
+    }
+
+    private void writeKeyFiles(Path dir, String kid, KeyPair pair) throws IOException {
+        writePem(dir.resolve(kid + ".private.pem"), "PRIVATE KEY", pair.getPrivate().getEncoded());
+        writePem(dir.resolve(kid + ".public.pem"), "PUBLIC KEY", pair.getPublic().getEncoded());
     }
 
     private Path resolveKeysDir() {

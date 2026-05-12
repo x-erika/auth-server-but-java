@@ -5,8 +5,12 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.transaction.Transactional;
 
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @ApplicationScoped
@@ -29,6 +33,40 @@ public class RoleRepository {
             )
             .setParameter("userId", userId)
             .getResultList();
+    }
+
+    public Set<String> findEffectiveNamesByUserId(UUID userId) {
+        List<Role> directlyAssigned = em.createQuery(
+                "SELECT r FROM Role r JOIN r.users u WHERE u.id = :userId",
+                Role.class
+            )
+            .setParameter("userId", userId)
+            .getResultList();
+
+        Map<UUID, Role> rolesById = loadAllRolesById();
+        Set<String> effective = new LinkedHashSet<>();
+        for (Role assigned : directlyAssigned) {
+            walkAncestors(assigned, rolesById, effective, new java.util.HashSet<>());
+        }
+        return effective;
+    }
+
+    private Map<UUID, Role> loadAllRolesById() {
+        Map<UUID, Role> map = new HashMap<>();
+        for (Role r : em.createQuery("SELECT r FROM Role r", Role.class).getResultList()) {
+            map.put(r.id, r);
+        }
+        return map;
+    }
+
+    private void walkAncestors(Role role, Map<UUID, Role> all, Set<String> sink, Set<UUID> visited) {
+        if (role == null || !visited.add(role.id)) {
+            return;
+        }
+        sink.add(role.name);
+        if (role.parentId != null) {
+            walkAncestors(all.get(role.parentId), all, sink, visited);
+        }
     }
 
     public boolean isAssigned(UUID userId, UUID roleId) {
@@ -60,6 +98,14 @@ public class RoleRepository {
         return em.createNativeQuery("DELETE FROM user_roles WHERE user_id = ?1 AND role_id = ?2")
             .setParameter(1, userId)
             .setParameter(2, roleId)
+            .executeUpdate();
+    }
+
+    @Transactional
+    public void setParent(UUID childId, UUID parentId) {
+        em.createQuery("UPDATE Role r SET r.parentId = :parentId WHERE r.id = :childId")
+            .setParameter("parentId", parentId)
+            .setParameter("childId", childId)
             .executeUpdate();
     }
 

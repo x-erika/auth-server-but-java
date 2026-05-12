@@ -53,6 +53,12 @@ public class Client {
     @Column(name = "refresh_token_ttl")
     public Integer refreshTokenTtl;
 
+    @Column(name = "frontchannel_logout_uri", columnDefinition = "TEXT")
+    public String frontchannelLogoutUri;
+
+    @Column(name = "backchannel_logout_uri", columnDefinition = "TEXT")
+    public String backchannelLogoutUri;
+
     @Column(name = "created_at")
     public LocalDateTime createdAt;
 

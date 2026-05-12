@@ -127,7 +127,7 @@ public class TokenFlow {
         auth.status = DeviceAuthorization.STATUS_CONSUMED;
         deviceRepository.update(auth);
 
-        return TokenResult.success(tokenIssuer.issue(user, client, session, auth.scope, null));
+        return TokenResult.success(tokenIssuer.issue(user, client, session, auth.scope, null, null));
     }
 
     private TokenResult fromClientCredentials(String clientId, String clientSecret, String scope) {
@@ -206,7 +206,8 @@ public class TokenFlow {
             return TokenResult.error("invalid_grant", "User/session not found");
         }
 
-        return TokenResult.success(tokenIssuer.issue(user, client, session, authCode.scope, authCode.nonce));
+        return TokenResult.success(tokenIssuer.issue(
+            user, client, session, authCode.scope, authCode.nonce, authCode.claimsRequested));
     }
 
     private TokenResult fromRefreshToken(String refreshTokenRaw, String clientId, String clientSecret) {
@@ -246,7 +247,7 @@ public class TokenFlow {
         stored.revoked = true;
         refreshTokenRepository.update(stored);
 
-        return TokenResult.success(tokenIssuer.issue(user, client, session, client.scopes, null));
+        return TokenResult.success(tokenIssuer.issue(user, client, session, client.scopes, null, null));
     }
 
     private boolean authenticateClient(Client client, String clientSecret) {

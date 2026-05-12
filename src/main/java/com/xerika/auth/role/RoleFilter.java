@@ -59,7 +59,7 @@ public class RoleFilter implements ContainerRequestFilter {
         }
 
         UserSession session = sessionOpt.get();
-        Set<String> userRoles = Set.copyOf(roleRepository.findNamesByUserId(session.user.id));
+        Set<String> userRoles = roleRepository.findEffectiveNamesByUserId(session.user.id);
 
         boolean granted = false;
         for (String role : required) {

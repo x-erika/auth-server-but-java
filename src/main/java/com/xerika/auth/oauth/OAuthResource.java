@@ -7,6 +7,9 @@ import com.xerika.auth.oauth.device.DeviceAuthorizationResult;
 import com.xerika.auth.oauth.device.DeviceFlow;
 import com.xerika.auth.oauth.device.DeviceVerifyResult;
 import com.xerika.auth.oauth.logout.LogoutFlow;
+import com.xerika.auth.oauth.logout.LogoutResult;
+import io.quarkus.qute.Template;
+import io.quarkus.qute.TemplateInstance;
 import com.xerika.auth.oauth.token.IntrospectFlow;
 import com.xerika.auth.oauth.token.IntrospectResult;
 import com.xerika.auth.oauth.token.RevokeFlow;
@@ -54,6 +57,9 @@ public class OAuthResource {
     @Inject
     DeviceFlow deviceFlow;
 
+    @Inject
+    Template logout;
+
     @GET
     @Path("/authorize")
     public Response authorize(
@@ -67,6 +73,8 @@ public class OAuthResource {
         @QueryParam("max_age") Long maxAge,
         @QueryParam("code_challenge") String codeChallenge,
         @QueryParam("code_challenge_method") String codeChallengeMethod,
+        @QueryParam("request") String requestJwt,
+        @QueryParam("claims") String claimsJson,
         @Context HttpHeaders headers,
         @Context UriInfo uriInfo
     ) {
@@ -83,7 +91,9 @@ public class OAuthResource {
             prompt,
             maxAge,
             codeChallenge,
-            codeChallengeMethod
+            codeChallengeMethod,
+            requestJwt,
+            claimsJson
         );
 
         if (!result.ok()) {
@@ -94,6 +104,11 @@ public class OAuthResource {
                         : "?" + uriInfo.getRequestUri().getRawQuery());
                 String location = "/login?return_to="
                     + URLEncoder.encode(returnTo, StandardCharsets.UTF_8);
+                return Response.seeOther(URI.create(location)).build();
+            }
+            if ("consent_required".equals(result.error()) && result.consentRequestId() != null) {
+                String location = "/consent?req="
+                    + URLEncoder.encode(result.consentRequestId(), StandardCharsets.UTF_8);
                 return Response.seeOther(URI.create(location)).build();
             }
             return Response.status(Response.Status.BAD_REQUEST)
@@ -200,19 +215,31 @@ public class OAuthResource {
         @Context HttpHeaders headers
     ) {
         String sessionToken = BearerExtractor.extract(headers);
-        boolean terminated = logoutFlow.logout(idTokenHint, sessionToken);
+        LogoutResult result = logoutFlow.logout(idTokenHint, sessionToken);
 
+        String finalRedirect = null;
         if (postLogoutRedirectUri != null && !postLogoutRedirectUri.isBlank()) {
-            String location = postLogoutRedirectUri;
+            finalRedirect = postLogoutRedirectUri;
             if (state != null && !state.isBlank()) {
-                String sep = location.contains("?") ? "&" : "?";
-                location = location + sep + "state=" + java.net.URLEncoder.encode(state, java.nio.charset.StandardCharsets.UTF_8);
+                String sep = finalRedirect.contains("?") ? "&" : "?";
+                finalRedirect = finalRedirect + sep + "state="
+                    + URLEncoder.encode(state, StandardCharsets.UTF_8);
             }
-            return Response.seeOther(java.net.URI.create(location)).build();
+        }
+
+        if (!result.frontchannelLogoutUris().isEmpty()) {
+            TemplateInstance page = logout
+                .data("frontchannelUris", result.frontchannelLogoutUris())
+                .data("finalRedirect", finalRedirect);
+            return Response.ok(page).type(MediaType.TEXT_HTML_TYPE).build();
+        }
+
+        if (finalRedirect != null) {
+            return Response.seeOther(URI.create(finalRedirect)).build();
         }
 
         return Response.ok(Map.of(
-            "message", terminated ? "logged out" : "no active session"
+            "message", result.terminated() ? "logged out" : "no active session"
         )).build();
     }
 

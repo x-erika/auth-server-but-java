@@ -20,7 +20,9 @@ import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.math.BigInteger;
+import java.security.PublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -76,22 +78,32 @@ public class OidcResource {
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("sub", user.id.toString());
 
-        if (scopes.contains("email")) {
+        Set<String> requested = new java.util.LinkedHashSet<>();
+        if (claims.has("claims_userinfo") && claims.get("claims_userinfo").isArray()) {
+            for (JsonNode entry : claims.get("claims_userinfo")) {
+                requested.add(entry.asText());
+            }
+        }
+
+        if (scopes.contains("email") || requested.contains("email")) {
             info.put("email", user.email);
+        }
+        if (scopes.contains("email") || requested.contains("email_verified")) {
             info.put("email_verified", user.emailVerified);
         }
 
-        if (scopes.contains("profile")) {
+        if (scopes.contains("profile") || requested.contains("preferred_username")) {
             info.put("preferred_username", user.username);
-            if (user.firstName != null) {
-                info.put("given_name", user.firstName);
-            }
-            if (user.lastName != null) {
-                info.put("family_name", user.lastName);
-            }
-            if (user.firstName != null && user.lastName != null) {
-                info.put("name", user.firstName + " " + user.lastName);
-            }
+        }
+        if ((scopes.contains("profile") || requested.contains("given_name")) && user.firstName != null) {
+            info.put("given_name", user.firstName);
+        }
+        if ((scopes.contains("profile") || requested.contains("family_name")) && user.lastName != null) {
+            info.put("family_name", user.lastName);
+        }
+        if ((scopes.contains("profile") || requested.contains("name"))
+            && user.firstName != null && user.lastName != null) {
+            info.put("name", user.firstName + " " + user.lastName);
         }
 
         return Response.ok(info).build();
@@ -108,6 +120,15 @@ public class OidcResource {
         doc.put("revocation_endpoint", issuerUrl + "/oauth/revoke");
         doc.put("introspection_endpoint", issuerUrl + "/oauth/introspect");
         doc.put("end_session_endpoint", issuerUrl + "/oauth/logout");
+        doc.put("frontchannel_logout_supported", true);
+        doc.put("frontchannel_logout_session_supported", true);
+        doc.put("backchannel_logout_supported", true);
+        doc.put("backchannel_logout_session_supported", true);
+        doc.put("request_parameter_supported", true);
+        doc.put("request_uri_parameter_supported", false);
+        doc.put("require_request_uri_registration", false);
+        doc.put("claims_parameter_supported", true);
+        doc.put("request_object_signing_alg_values_supported", List.of("HS256", "none"));
         doc.put("device_authorization_endpoint", issuerUrl + "/oauth/device-authorization");
         doc.put("jwks_uri", issuerUrl + "/.well-known/jwks.json");
         doc.put("response_types_supported", List.of("code"));
@@ -131,16 +152,19 @@ public class OidcResource {
     @GET
     @Path("/.well-known/jwks.json")
     public Response jwks() {
-        RSAPublicKey rsa = (RSAPublicKey) keys.publicKey();
-        JwksKey key = new JwksKey(
-            "RSA",
-            "sig",
-            "RS256",
-            keys.keyId(),
-            base64UrlUnsigned(rsa.getModulus()),
-            base64UrlUnsigned(rsa.getPublicExponent())
-        );
-        return Response.ok(new Jwks(List.of(key))).build();
+        List<JwksKey> jwksKeys = new ArrayList<>();
+        for (Map.Entry<String, PublicKey> entry : keys.allPublicKeys().entrySet()) {
+            RSAPublicKey rsa = (RSAPublicKey) entry.getValue();
+            jwksKeys.add(new JwksKey(
+                "RSA",
+                "sig",
+                "RS256",
+                entry.getKey(),
+                base64UrlUnsigned(rsa.getModulus()),
+                base64UrlUnsigned(rsa.getPublicExponent())
+            ));
+        }
+        return Response.ok(new Jwks(jwksKeys)).build();
     }
 
     private String base64UrlUnsigned(BigInteger value) {

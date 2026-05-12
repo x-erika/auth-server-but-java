@@ -43,6 +43,24 @@ public class JwtSigner {
         return signed(builder);
     }
 
+    public String signLogoutToken(String subject, String audience, String sessionId) {
+        Map<String, Object> events = new java.util.LinkedHashMap<>();
+        events.put("http://schemas.openid.net/event/backchannel-logout", new java.util.LinkedHashMap<>());
+
+        JwtClaimsBuilder builder = Jwt.issuer(issuer)
+            .audience(audience)
+            .claim("jti", UUID.randomUUID().toString())
+            .claim("iat", java.time.Instant.now().getEpochSecond())
+            .claim("events", events)
+            .claim("sid", sessionId);
+
+        if (subject != null && !subject.isBlank()) {
+            builder.subject(subject);
+        }
+
+        return signed(builder);
+    }
+
     public String signIdToken(
         String subject,
         String audience,

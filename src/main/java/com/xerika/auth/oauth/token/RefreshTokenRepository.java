@@ -44,4 +44,13 @@ public class RefreshTokenRepository {
             .setParameter("sessionId", sessionId)
             .executeUpdate();
     }
+
+    public java.util.List<java.util.UUID> findClientIdsBySessionId(UUID sessionId) {
+        return em.createQuery(
+                "SELECT DISTINCT r.client.id FROM RefreshToken r WHERE r.session.id = :sessionId",
+                java.util.UUID.class
+            )
+            .setParameter("sessionId", sessionId)
+            .getResultList();
+    }
 }

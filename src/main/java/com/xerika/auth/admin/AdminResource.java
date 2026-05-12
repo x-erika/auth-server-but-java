@@ -2,6 +2,7 @@ package com.xerika.auth.admin;
 
 import com.xerika.auth.admin.dto.RoleSummary;
 import com.xerika.auth.admin.dto.UserSummary;
+import com.xerika.auth.common.crypto.RsaKeyProvider;
 import com.xerika.auth.common.web.BearerExtractor;
 import com.xerika.auth.role.RequiresRole;
 import com.xerika.auth.role.Role;
@@ -42,6 +43,9 @@ public class AdminResource {
 
     @Inject
     RoleRepository roleRepository;
+
+    @Inject
+    RsaKeyProvider rsaKeyProvider;
 
     @GET
     @Path("/ping")
@@ -132,5 +136,92 @@ public class AdminResource {
             "message", "role revoked",
             "roles", roleRepository.findNamesByUserId(userId)
         )).build();
+    }
+
+    @POST
+    @Path("/roles/{childName}/parent/{parentName}")
+    public Response setRoleParent(
+        @PathParam("childName") String childName,
+        @PathParam("parentName") String parentName
+    ) {
+        Optional<Role> childOpt = roleRepository.findByName(childName);
+        Optional<Role> parentOpt = roleRepository.findByName(parentName);
+        if (childOpt.isEmpty() || parentOpt.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "role not found")).build();
+        }
+
+        Role child = childOpt.get();
+        Role parent = parentOpt.get();
+        if (child.id.equals(parent.id)) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "role cannot be its own parent")).build();
+        }
+        if (wouldCreateCycle(child.id, parent.id)) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "cycle detected in role hierarchy")).build();
+        }
+
+        roleRepository.setParent(child.id, parent.id);
+        return Response.ok(Map.of(
+            "message", "parent set",
+            "child", childName,
+            "parent", parentName
+        )).build();
+    }
+
+    @DELETE
+    @Path("/roles/{childName}/parent")
+    public Response clearRoleParent(@PathParam("childName") String childName) {
+        Optional<Role> childOpt = roleRepository.findByName(childName);
+        if (childOpt.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "role not found")).build();
+        }
+        roleRepository.setParent(childOpt.get().id, null);
+        return Response.ok(Map.of("message", "parent cleared", "child", childName)).build();
+    }
+
+    @GET
+    @Path("/keys")
+    public Response listKeys() {
+        List<Map<String, Object>> entries = rsaKeyProvider.allPublicKeys().keySet().stream()
+            .map(kid -> {
+                Map<String, Object> m = new java.util.LinkedHashMap<>();
+                m.put("kid", kid);
+                m.put("active", kid.equals(rsaKeyProvider.keyId()));
+                return m;
+            })
+            .toList();
+        return Response.ok(Map.of("active_kid", rsaKeyProvider.keyId(), "keys", entries)).build();
+    }
+
+    @POST
+    @Path("/keys/rotate")
+    public Response rotateKey() {
+        String previousKid = rsaKeyProvider.keyId();
+        String newKid = rsaKeyProvider.rotate();
+        return Response.ok(Map.of(
+            "message", "key rotated",
+            "previous_kid", previousKid,
+            "new_active_kid", newKid
+        )).build();
+    }
+
+    private boolean wouldCreateCycle(UUID childId, UUID newParentId) {
+        java.util.Map<UUID, UUID> parentOf = new java.util.HashMap<>();
+        for (Role r : roleRepository.findAll()) {
+            parentOf.put(r.id, r.parentId);
+        }
+
+        UUID cursor = newParentId;
+        java.util.Set<UUID> seen = new java.util.HashSet<>();
+        while (cursor != null) {
+            if (cursor.equals(childId) || !seen.add(cursor)) {
+                return true;
+            }
+            cursor = parentOf.get(cursor);
+        }
+        return false;
     }
 }

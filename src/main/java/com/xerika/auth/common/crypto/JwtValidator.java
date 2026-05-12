@@ -7,6 +7,7 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.nio.charset.StandardCharsets;
+import java.security.PublicKey;
 import java.security.Signature;
 import java.time.Instant;
 import java.util.Base64;
@@ -34,9 +35,14 @@ public class JwtValidator {
         }
 
         try {
+            JsonNode header = MAPPER.readTree(Base64.getUrlDecoder().decode(parts[0]));
+            String kid = header.has("kid") ? header.get("kid").asText() : null;
+
+            PublicKey verifier = keys.publicKeyByKid(kid).orElse(keys.publicKey());
+
             byte[] signatureBytes = Base64.getUrlDecoder().decode(parts[2]);
             Signature signature = Signature.getInstance("SHA256withRSA");
-            signature.initVerify(keys.publicKey());
+            signature.initVerify(verifier);
             signature.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.UTF_8));
             if (!signature.verify(signatureBytes)) {
                 return Optional.empty();

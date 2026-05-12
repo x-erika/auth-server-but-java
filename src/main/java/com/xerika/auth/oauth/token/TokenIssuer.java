@@ -5,6 +5,7 @@ import com.xerika.auth.common.crypto.JwtSigner;
 import com.xerika.auth.common.crypto.RandomTokens;
 import com.xerika.auth.common.crypto.Sha256;
 import com.xerika.auth.oauth.Scopes;
+import com.xerika.auth.oauth.authorize.ClaimsRequest;
 import com.xerika.auth.role.RoleRepository;
 import com.xerika.auth.session.UserSession;
 import com.xerika.auth.user.User;
@@ -57,15 +58,17 @@ public class TokenIssuer {
         Client client,
         UserSession session,
         String scope,
-        String nonce
+        String nonce,
+        String claimsRequestedJson
     ) {
-        List<String> roles = roleRepository.findNamesByUserId(user.id);
+        List<String> roles = List.copyOf(roleRepository.findEffectiveNamesByUserId(user.id));
         Set<String> scopes = Scopes.parse(scope);
+        ClaimsRequest claimsRequest = ClaimsRequest.parse(claimsRequestedJson);
 
         String accessToken = jwtSigner.signAccessToken(
             user.id.toString(),
             client.clientId,
-            buildAccessTokenClaims(user, session, roles, scope)
+            buildAccessTokenClaims(user, session, roles, scope, claimsRequest)
         );
 
         String refreshTokenRaw = RandomTokens.urlSafe(48);
@@ -96,7 +99,7 @@ public class TokenIssuer {
                 client.clientId,
                 nonce,
                 authTime,
-                buildIdTokenClaims(user, scopes)
+                buildIdTokenClaims(user, scopes, claimsRequest)
             );
             response.put("id_token", idToken);
         }
@@ -108,7 +111,8 @@ public class TokenIssuer {
         User user,
         UserSession session,
         List<String> roles,
-        String scope
+        String scope,
+        ClaimsRequest claimsRequest
     ) {
         Map<String, Object> claims = new LinkedHashMap<>();
         claims.put("email", user.email);
@@ -116,25 +120,40 @@ public class TokenIssuer {
         claims.put("sid", session.id.toString());
         claims.put("roles", roles);
         claims.put("scope", scope == null ? "" : scope);
+        if (!claimsRequest.userinfoClaims().isEmpty()) {
+            claims.put("claims_userinfo", List.copyOf(claimsRequest.userinfoClaims()));
+        }
         return claims;
     }
 
-    private Map<String, Object> buildIdTokenClaims(User user, Set<String> scopes) {
+    private Map<String, Object> buildIdTokenClaims(User user, Set<String> scopes, ClaimsRequest claimsRequest) {
         Map<String, Object> claims = new LinkedHashMap<>();
 
-        if (scopes.contains("email")) {
+        boolean includeEmail = scopes.contains("email") || claimsRequest.idTokenClaims().contains("email");
+        boolean includeEmailVerified = scopes.contains("email") || claimsRequest.idTokenClaims().contains("email_verified");
+        boolean includeProfile = scopes.contains("profile");
+
+        if (includeEmail) {
             claims.put("email", user.email);
+        }
+        if (includeEmailVerified) {
             claims.put("email_verified", user.emailVerified);
         }
 
-        if (scopes.contains("profile")) {
+        if (includeProfile || claimsRequest.idTokenClaims().contains("preferred_username")) {
             claims.put("preferred_username", user.username);
+        }
+        if (includeProfile || claimsRequest.idTokenClaims().contains("given_name")) {
             if (user.firstName != null) {
                 claims.put("given_name", user.firstName);
             }
+        }
+        if (includeProfile || claimsRequest.idTokenClaims().contains("family_name")) {
             if (user.lastName != null) {
                 claims.put("family_name", user.lastName);
             }
+        }
+        if (includeProfile || claimsRequest.idTokenClaims().contains("name")) {
             if (user.firstName != null && user.lastName != null) {
                 claims.put("name", user.firstName + " " + user.lastName);
             }

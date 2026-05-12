@@ -15,8 +15,14 @@ public class RoleBootstrap {
     RoleRepository roleRepository;
 
     public void ensureCoreRoles() {
-        ensureRole("admin", "Full administrative access");
         ensureRole("user", "Standard authenticated user");
+        ensureRole("admin", "Full administrative access");
+
+        Role admin = roleRepository.findByName("admin").orElse(null);
+        Role user = roleRepository.findByName("user").orElse(null);
+        if (admin != null && user != null && admin.parentId == null) {
+            roleRepository.setParent(admin.id, user.id);
+        }
     }
 
     private void ensureRole(String name, String description) {

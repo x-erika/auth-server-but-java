@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Authorize {clientName ?: 'client'}</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #fafafa;
+            --fg: #111;
+            --muted: #666;
+            --card-bg: #fff;
+            --border: #e5e5e5;
+            --accent: #2563eb;
+            --danger: #b91c1c;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0a0a0a;
+                --fg: #f5f5f5;
+                --muted: #999;
+                --card-bg: #141414;
+                --border: #262626;
+                --accent: #3b82f6;
+                --danger: #ef4444;
+            }
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 32px;
+            width: 100%;
+            max-width: 440px;
+        }
+        h1 {
+            margin: 0 0 8px;
+            font-size: 1.4rem;
+        }
+        .lead {
+            margin: 0 0 24px;
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+        .client {
+            font-weight: 600;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+            margin: 0 0 24px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        li {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.95rem;
+        }
+        li:last-child { border-bottom: none; }
+        .scope-name {
+            font-weight: 600;
+            color: var(--accent);
+        }
+        .scope-desc {
+            display: block;
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-top: 2px;
+        }
+        .actions {
+            display: flex;
+            gap: 12px;
+        }
+        button {
+            flex: 1;
+            padding: 10px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--fg);
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+        button[name="action"][value="allow"] {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+        button:hover { opacity: 0.9; }
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    {#if error}
+        <div class="error">{error}</div>
+    {/if}
+
+    {#if requestId}
+        <h1>Authorize <span class="client">{clientName}</span></h1>
+        <p class="lead">This application is requesting access to your account.</p>
+
+        <ul>
+            {#for scope in scopes}
+                <li>
+                    <span class="scope-name">{scope}</span>
+                    <span class="scope-desc">
+                        {#switch scope}
+                            {#case "openid"}Sign you in
+                            {#case "profile"}Your basic profile (username, name)
+                            {#case "email"}Your email address
+                            {#case "offline_access"}Stay signed in (refresh tokens)
+                            {#case}Access the {scope} scope
+                        {/switch}
+                    </span>
+                </li>
+            {/for}
+        </ul>
+
+        <form method="post" action="/consent">
+            <input type="hidden" name="req" value="{requestId}">
+            <div class="actions">
+                <button type="submit" name="action" value="deny">Deny</button>
+                <button type="submit" name="action" value="allow">Allow</button>
+            </div>
+        </form>
+    {/if}
+</div>
+</body>
+</html>

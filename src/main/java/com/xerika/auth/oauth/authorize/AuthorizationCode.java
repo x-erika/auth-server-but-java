@@ -40,6 +40,9 @@ public class AuthorizationCode {
     @Column(name = "code_challenge_method")
     public String codeChallengeMethod;
 
+    @Column(name = "claims_requested", columnDefinition = "TEXT")
+    public String claimsRequested;
+
     @Column(name = "expires_at", nullable = false)
     public LocalDateTime expiresAt;
 

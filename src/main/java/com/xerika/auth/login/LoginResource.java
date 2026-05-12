@@ -58,7 +58,7 @@ public class LoginResource {
         String ipAddress = xForwardedFor == null ? null : xForwardedFor.split(",")[0].trim();
 
         UserSession session = sessionService.createSession(user, ipAddress, userAgent);
-        List<String> roles = roleRepository.findNamesByUserId(user.id);
+        List<String> roles = List.copyOf(roleRepository.findEffectiveNamesByUserId(user.id));
 
         return Response.ok(new LoginResponse(
             "login success",
@@ -80,7 +80,7 @@ public class LoginResource {
         }
 
         UserSession session = sessionOpt.get();
-        List<String> roles = roleRepository.findNamesByUserId(session.user.id);
+        List<String> roles = List.copyOf(roleRepository.findEffectiveNamesByUserId(session.user.id));
 
         return Response.ok(new MeResponse(
             SessionPayload.from(session),
