@@ -43,4 +43,17 @@ public class UserRepository {
     public void persist(User user) {
         em.persist(user);
     }
+
+    @Transactional
+    public User update(User user) {
+        return em.merge(user);
+    }
+
+    @Transactional
+    public void delete(UUID id) {
+        User existing = em.find(User.class, id);
+        if (existing != null) {
+            em.remove(existing);
+        }
+    }
 }

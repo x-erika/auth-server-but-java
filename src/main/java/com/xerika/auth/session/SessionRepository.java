@@ -6,6 +6,7 @@ import jakarta.persistence.PersistenceContext;
 import jakarta.transaction.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -41,5 +42,39 @@ public class SessionRepository {
     public void delete(UserSession session) {
         UserSession managed = em.contains(session) ? session : em.merge(session);
         em.remove(managed);
+    }
+
+    public List<UserSession> findAllActive() {
+        return em.createQuery(
+                "SELECT s FROM UserSession s WHERE s.expiresAt IS NULL OR s.expiresAt > :now ORDER BY s.lastAccessedAt DESC",
+                UserSession.class
+            )
+            .setParameter("now", LocalDateTime.now())
+            .setMaxResults(200)
+            .getResultList();
+    }
+
+    public List<UserSession> findActiveByUserId(UUID userId) {
+        return em.createQuery(
+                "SELECT s FROM UserSession s WHERE s.user.id = :userId AND (s.expiresAt IS NULL OR s.expiresAt > :now) ORDER BY s.lastAccessedAt DESC",
+                UserSession.class
+            )
+            .setParameter("userId", userId)
+            .setParameter("now", LocalDateTime.now())
+            .getResultList();
+    }
+
+    @Transactional
+    public int deleteById(UUID id) {
+        return em.createQuery("DELETE FROM UserSession s WHERE s.id = :id")
+            .setParameter("id", id)
+            .executeUpdate();
+    }
+
+    @Transactional
+    public int deleteAllByUserId(UUID userId) {
+        return em.createQuery("DELETE FROM UserSession s WHERE s.user.id = :userId")
+            .setParameter("userId", userId)
+            .executeUpdate();
     }
 }

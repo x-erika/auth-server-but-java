@@ -1,14 +1,30 @@
 package com.xerika.auth.admin;
 
+import com.xerika.auth.admin.dto.ClientRequest;
+import com.xerika.auth.admin.dto.ClientSummary;
+import com.xerika.auth.admin.dto.ConsentSummary;
 import com.xerika.auth.admin.dto.RoleSummary;
+import com.xerika.auth.admin.dto.SessionSummary;
+import com.xerika.auth.admin.dto.UserCreateRequest;
 import com.xerika.auth.admin.dto.UserSummary;
+import com.xerika.auth.admin.dto.UserUpdateRequest;
+import com.xerika.auth.client.Client;
+import com.xerika.auth.client.ClientRepository;
+import com.xerika.auth.client.RedirectUri;
+import com.xerika.auth.common.crypto.Argon2Hasher;
 import com.xerika.auth.common.crypto.RsaKeyProvider;
 import com.xerika.auth.common.web.BearerExtractor;
+import com.xerika.auth.oauth.consent.UserConsent;
+import com.xerika.auth.oauth.consent.UserConsentRepository;
+import com.xerika.auth.oauth.token.RefreshTokenRepository;
 import com.xerika.auth.role.RequiresRole;
 import com.xerika.auth.role.Role;
 import com.xerika.auth.role.RoleRepository;
+import com.xerika.auth.session.SessionRepository;
 import com.xerika.auth.session.SessionService;
 import com.xerika.auth.session.UserSession;
+import com.xerika.auth.user.Credential;
+import com.xerika.auth.user.CredentialRepository;
 import com.xerika.auth.user.User;
 import com.xerika.auth.user.UserRepository;
 import jakarta.inject.Inject;
@@ -16,6 +32,7 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
@@ -46,6 +63,21 @@ public class AdminResource {
 
     @Inject
     RsaKeyProvider rsaKeyProvider;
+
+    @Inject
+    ClientRepository clientRepository;
+
+    @Inject
+    SessionRepository sessionRepository;
+
+    @Inject
+    RefreshTokenRepository refreshTokenRepository;
+
+    @Inject
+    UserConsentRepository userConsentRepository;
+
+    @Inject
+    CredentialRepository credentialRepository;
 
     @GET
     @Path("/ping")
@@ -206,6 +238,417 @@ public class AdminResource {
             "previous_kid", previousKid,
             "new_active_kid", newKid
         )).build();
+    }
+
+    @GET
+    @Path("/clients")
+    public Response listClients() {
+        List<ClientSummary> clients = clientRepository.findAll().stream()
+            .map(ClientSummary::from)
+            .toList();
+        return Response.ok(clients).build();
+    }
+
+    @GET
+    @Path("/clients/{id}")
+    public Response getClient(@PathParam("id") String idStr) {
+        UUID id;
+        try {
+            id = UUID.fromString(idStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid id")).build();
+        }
+        return clientRepository.findById(id)
+            .map(c -> Response.ok(ClientSummary.from(c)).build())
+            .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "client not found")).build());
+    }
+
+    @POST
+    @Path("/clients")
+    public Response createClient(ClientRequest body) {
+        if (body == null || body.clientId() == null || body.clientId().isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "clientId is required")).build();
+        }
+        if (clientRepository.findByClientId(body.clientId()).isPresent()) {
+            return Response.status(Response.Status.CONFLICT)
+                .entity(Map.of("message", "clientId already exists")).build();
+        }
+
+        Client client = new Client();
+        client.id = UUID.randomUUID();
+        client.clientId = body.clientId();
+        client.clientSecret = body.clientSecret();
+        client.name = body.name();
+        client.type = body.type() == null ? "public" : body.type();
+        client.scopes = body.scopes();
+        client.grantTypes = body.grantTypes();
+        client.responseTypes = body.responseTypes();
+        client.pkceRequired = body.pkceRequired() == null ? true : body.pkceRequired();
+        client.enabled = body.enabled() == null ? true : body.enabled();
+        client.baseUrl = body.baseUrl();
+        client.description = body.description();
+        client.frontchannelLogoutUri = body.frontchannelLogoutUri();
+        client.backchannelLogoutUri = body.backchannelLogoutUri();
+        client.createdAt = java.time.LocalDateTime.now();
+        client.updatedAt = java.time.LocalDateTime.now();
+        clientRepository.persist(client);
+
+        return Response.status(Response.Status.CREATED)
+            .entity(ClientSummary.from(clientRepository.findById(client.id).orElse(client)))
+            .build();
+    }
+
+    @PUT
+    @Path("/clients/{id}")
+    public Response updateClient(@PathParam("id") String idStr, ClientRequest body) {
+        UUID id;
+        try {
+            id = UUID.fromString(idStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid id")).build();
+        }
+        Client existing = clientRepository.findById(id).orElse(null);
+        if (existing == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "client not found")).build();
+        }
+        if (body == null) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "request body required")).build();
+        }
+
+        if (body.clientSecret() != null && !body.clientSecret().isBlank()) {
+            existing.clientSecret = body.clientSecret();
+        }
+        if (body.name() != null) existing.name = body.name();
+        if (body.type() != null) existing.type = body.type();
+        if (body.scopes() != null) existing.scopes = body.scopes();
+        if (body.grantTypes() != null) existing.grantTypes = body.grantTypes();
+        if (body.responseTypes() != null) existing.responseTypes = body.responseTypes();
+        if (body.pkceRequired() != null) existing.pkceRequired = body.pkceRequired();
+        if (body.enabled() != null) existing.enabled = body.enabled();
+        if (body.baseUrl() != null) existing.baseUrl = body.baseUrl();
+        if (body.description() != null) existing.description = body.description();
+        if (body.frontchannelLogoutUri() != null) existing.frontchannelLogoutUri = body.frontchannelLogoutUri();
+        if (body.backchannelLogoutUri() != null) existing.backchannelLogoutUri = body.backchannelLogoutUri();
+        existing.updatedAt = java.time.LocalDateTime.now();
+
+        clientRepository.update(existing);
+        return Response.ok(ClientSummary.from(
+            clientRepository.findById(id).orElse(existing)
+        )).build();
+    }
+
+    @DELETE
+    @Path("/clients/{id}")
+    public Response deleteClient(@PathParam("id") String idStr) {
+        UUID id;
+        try {
+            id = UUID.fromString(idStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid id")).build();
+        }
+        clientRepository.delete(id);
+        return Response.noContent().build();
+    }
+
+    @POST
+    @Path("/clients/{id}/redirect-uris")
+    public Response addRedirectUri(@PathParam("id") String idStr, Map<String, String> body) {
+        UUID id;
+        try {
+            id = UUID.fromString(idStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid id")).build();
+        }
+        String uri = body == null ? null : body.get("uri");
+        if (uri == null || uri.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "uri is required")).build();
+        }
+        Client client = clientRepository.findById(id).orElse(null);
+        if (client == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "client not found")).build();
+        }
+
+        RedirectUri redirectUri = new RedirectUri();
+        redirectUri.id = UUID.randomUUID();
+        redirectUri.client = client;
+        redirectUri.uri = uri;
+        redirectUri.createdAt = java.time.LocalDateTime.now();
+        clientRepository.addRedirectUri(redirectUri);
+
+        return Response.ok(ClientSummary.from(
+            clientRepository.findById(id).orElse(client)
+        )).build();
+    }
+
+    @DELETE
+    @Path("/clients/{id}/redirect-uris/{uriId}")
+    public Response removeRedirectUri(
+        @PathParam("id") String idStr,
+        @PathParam("uriId") String uriIdStr
+    ) {
+        UUID uriId;
+        try {
+            uriId = UUID.fromString(uriIdStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid uriId")).build();
+        }
+        clientRepository.removeRedirectUri(uriId);
+        return Response.noContent().build();
+    }
+
+    // ---- Sessions ----
+
+    @GET
+    @Path("/sessions")
+    public Response listSessions() {
+        List<SessionSummary> sessions = sessionRepository.findAllActive().stream()
+            .map(SessionSummary::from)
+            .toList();
+        return Response.ok(sessions).build();
+    }
+
+    @GET
+    @Path("/users/{userId}/sessions")
+    public Response listSessionsForUser(@PathParam("userId") String userIdStr) {
+        UUID userId;
+        try {
+            userId = UUID.fromString(userIdStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid userId")).build();
+        }
+        List<SessionSummary> sessions = sessionRepository.findActiveByUserId(userId).stream()
+            .map(SessionSummary::from)
+            .toList();
+        return Response.ok(sessions).build();
+    }
+
+    @DELETE
+    @Path("/sessions/{id}")
+    public Response revokeSession(@PathParam("id") String idStr) {
+        UUID id;
+        try {
+            id = UUID.fromString(idStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid id")).build();
+        }
+        refreshTokenRepository.revokeBySessionId(id);
+        sessionRepository.deleteById(id);
+        return Response.noContent().build();
+    }
+
+    // ---- Consents ----
+
+    @GET
+    @Path("/users/{userId}/consents")
+    public Response listConsentsForUser(@PathParam("userId") String userIdStr) {
+        UUID userId;
+        try {
+            userId = UUID.fromString(userIdStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid userId")).build();
+        }
+        List<UserConsent> consents = userConsentRepository.findByUserId(userId);
+        List<ConsentSummary> summaries = consents.stream()
+            .map(c -> ConsentSummary.from(c,
+                clientRepository.findById(c.clientId).orElse(null)))
+            .toList();
+        return Response.ok(summaries).build();
+    }
+
+    @DELETE
+    @Path("/consents/{id}")
+    public Response revokeConsent(@PathParam("id") String idStr) {
+        UUID id;
+        try {
+            id = UUID.fromString(idStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid id")).build();
+        }
+        userConsentRepository.deleteById(id);
+        return Response.noContent().build();
+    }
+
+    // ---- User CRUD ----
+
+    @GET
+    @Path("/users/{userId}")
+    public Response getUser(@PathParam("userId") String userIdStr) {
+        UUID userId;
+        try {
+            userId = UUID.fromString(userIdStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid userId")).build();
+        }
+        return userRepository.findById(userId)
+            .map(u -> Response.ok(UserSummary.from(u,
+                roleRepository.findNamesByUserId(u.id))).build())
+            .orElseGet(() -> Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "user not found")).build());
+    }
+
+    @POST
+    @Path("/users")
+    public Response createUser(UserCreateRequest body) {
+        if (body == null
+            || body.email() == null || body.email().isBlank()
+            || body.username() == null || body.username().isBlank()
+            || body.password() == null || body.password().length() < 8) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message",
+                    "email, username, password (>=8 chars) are required"))
+                .build();
+        }
+        if (userRepository.findByEmail(body.email()).isPresent()) {
+            return Response.status(Response.Status.CONFLICT)
+                .entity(Map.of("message", "email already registered")).build();
+        }
+        if (userRepository.findByUsername(body.username()).isPresent()) {
+            return Response.status(Response.Status.CONFLICT)
+                .entity(Map.of("message", "username already taken")).build();
+        }
+
+        User user = new User();
+        user.id = UUID.randomUUID();
+        user.email = body.email();
+        user.username = body.username();
+        user.firstName = body.firstName();
+        user.lastName = body.lastName();
+        user.enabled = body.enabled() == null ? true : body.enabled();
+        user.emailVerified = body.emailVerified() == null ? false : body.emailVerified();
+        user.createdAt = java.time.LocalDateTime.now();
+        user.updatedAt = java.time.LocalDateTime.now();
+        userRepository.persist(user);
+
+        Map<String, String> argon2 = Argon2Hasher.hash(body.password());
+        Credential credential = new Credential();
+        credential.id = UUID.randomUUID();
+        credential.user = user;
+        credential.type = "password";
+        credential.secretData = argon2.get("secretData");
+        credential.credentialData = argon2.get("credentialData");
+        credential.createdAt = java.time.LocalDateTime.now();
+        credential.updatedAt = java.time.LocalDateTime.now();
+        credentialRepository.persist(credential);
+
+        roleRepository.findByName("user").ifPresent(role ->
+            roleRepository.assignToUser(user.id, role.id)
+        );
+
+        return Response.status(Response.Status.CREATED)
+            .entity(UserSummary.from(user, roleRepository.findNamesByUserId(user.id)))
+            .build();
+    }
+
+    @jakarta.ws.rs.PATCH
+    @Path("/users/{userId}")
+    public Response updateUser(
+        @PathParam("userId") String userIdStr,
+        UserUpdateRequest body
+    ) {
+        UUID userId;
+        try {
+            userId = UUID.fromString(userIdStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid userId")).build();
+        }
+        if (body == null) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "request body required")).build();
+        }
+        User user = userRepository.findById(userId).orElse(null);
+        if (user == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("message", "user not found")).build();
+        }
+
+        if (body.firstName() != null) user.firstName = body.firstName();
+        if (body.lastName() != null) user.lastName = body.lastName();
+        if (body.enabled() != null) {
+            user.enabled = body.enabled();
+            if (!body.enabled()) {
+                refreshTokenRepository.revokeBySessionId(null); // no-op safeguard
+                sessionRepository.deleteAllByUserId(userId);
+            }
+        }
+        if (body.emailVerified() != null) user.emailVerified = body.emailVerified();
+        user.updatedAt = java.time.LocalDateTime.now();
+        userRepository.update(user);
+
+        if (body.newPassword() != null && !body.newPassword().isBlank()) {
+            if (body.newPassword().length() < 8) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("message", "password must be at least 8 characters"))
+                    .build();
+            }
+            Credential cred = credentialRepository
+                .findFirstByUserIdAndType(userId, "password")
+                .orElse(null);
+            Map<String, String> argon2 = Argon2Hasher.hash(body.newPassword());
+            if (cred == null) {
+                cred = new Credential();
+                cred.id = UUID.randomUUID();
+                cred.user = user;
+                cred.type = "password";
+                cred.createdAt = java.time.LocalDateTime.now();
+                cred.secretData = argon2.get("secretData");
+                cred.credentialData = argon2.get("credentialData");
+                cred.updatedAt = java.time.LocalDateTime.now();
+                credentialRepository.persist(cred);
+            } else {
+                cred.secretData = argon2.get("secretData");
+                cred.credentialData = argon2.get("credentialData");
+                cred.updatedAt = java.time.LocalDateTime.now();
+                credentialRepository.update(cred);
+            }
+            // password change invalidates active sessions
+            sessionRepository.deleteAllByUserId(userId);
+        }
+
+        return Response.ok(UserSummary.from(user,
+            roleRepository.findNamesByUserId(userId))).build();
+    }
+
+    @DELETE
+    @Path("/users/{userId}")
+    public Response deleteUser(
+        @PathParam("userId") String userIdStr,
+        @Context HttpHeaders headers
+    ) {
+        UUID userId;
+        try {
+            userId = UUID.fromString(userIdStr);
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "invalid userId")).build();
+        }
+
+        UserSession current = sessionService
+            .findActiveSession(BearerExtractor.extract(headers))
+            .orElse(null);
+        if (current != null && current.user.id.equals(userId)) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "cannot delete your own account")).build();
+        }
+
+        userRepository.delete(userId);
+        return Response.noContent().build();
     }
 
     private boolean wouldCreateCycle(UUID childId, UUID newParentId) {

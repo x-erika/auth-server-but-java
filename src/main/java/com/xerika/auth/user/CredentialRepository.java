@@ -38,4 +38,9 @@ public class CredentialRepository {
     public void persist(Credential credential) {
         em.persist(credential);
     }
+
+    @Transactional
+    public Credential update(Credential credential) {
+        return em.merge(credential);
+    }
 }
