@@ -40,7 +40,9 @@ public class JwtSigner {
     public String signAccessToken(String subject, String audience, Map<String, Object> extraClaims) {
         JwtClaimsBuilder builder = baseClaims(subject, audience, Duration.ofSeconds(accessTokenTtlSeconds));
         applyClaims(builder, extraClaims);
-        return signed(builder);
+        // RFC 9068 §2.1 — access tokens use `typ: at+jwt` so resource servers can
+        // distinguish them from id tokens that happen to flow through the same path.
+        return signedWithType(builder, "at+jwt");
     }
 
     public String signLogoutToken(String subject, String audience, String sessionId) {
@@ -100,6 +102,14 @@ public class JwtSigner {
         return builder
             .jws()
             .keyId(keys.keyId())
+            .sign(keys.privateKey());
+    }
+
+    private String signedWithType(JwtClaimsBuilder builder, String typ) {
+        return builder
+            .jws()
+            .keyId(keys.keyId())
+            .header("typ", typ)
             .sign(keys.privateKey());
     }
 }

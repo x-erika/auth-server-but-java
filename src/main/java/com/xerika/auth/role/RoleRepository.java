@@ -2,10 +2,12 @@ package com.xerika.auth.role;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
 import jakarta.transaction.Transactional;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -101,12 +103,49 @@ public class RoleRepository {
             .executeUpdate();
     }
 
+    /** Thrown when a setParent call would create a cycle in the role hierarchy. */
+    public static class RoleCycleException extends RuntimeException {
+        public RoleCycleException(String message) {
+            super(message);
+        }
+    }
+
     @Transactional
     public void setParent(UUID childId, UUID parentId) {
+        if (parentId != null) {
+            if (childId.equals(parentId)) {
+                throw new RoleCycleException("Role cannot be its own parent");
+            }
+            // Lock the roles table FOR UPDATE while reading the graph + writing the
+            // new edge — two concurrent setParent calls can't both observe a
+            // cycle-free graph and then both commit conflicting edges.
+            if (wouldCreateCycleLocked(childId, parentId)) {
+                throw new RoleCycleException("Cycle detected in role hierarchy");
+            }
+        }
         em.createQuery("UPDATE Role r SET r.parentId = :parentId WHERE r.id = :childId")
             .setParameter("parentId", parentId)
             .setParameter("childId", childId)
             .executeUpdate();
+    }
+
+    private boolean wouldCreateCycleLocked(UUID childId, UUID newParentId) {
+        List<Role> all = em.createQuery("SELECT r FROM Role r", Role.class)
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+            .getResultList();
+        Map<UUID, UUID> parentOf = new HashMap<>();
+        for (Role r : all) {
+            parentOf.put(r.id, r.parentId);
+        }
+        UUID cursor = newParentId;
+        Set<UUID> seen = new HashSet<>();
+        while (cursor != null) {
+            if (cursor.equals(childId) || !seen.add(cursor)) {
+                return true;
+            }
+            cursor = parentOf.get(cursor);
+        }
+        return false;
     }
 
     public List<Role> findAll() {

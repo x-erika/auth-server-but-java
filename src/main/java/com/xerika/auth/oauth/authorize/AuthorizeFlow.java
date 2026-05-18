@@ -31,6 +31,9 @@ public class AuthorizeFlow {
     private static final int AUTH_CODE_TTL_MINUTES = 3;
     private static final int AUTH_CODE_BYTES = 48;
     private static final int CONSENT_REQUEST_TTL_MINUTES = 10;
+    // After a re-auth via /login, the OP treats prompt=login as already-satisfied for
+    // this long. Picks up the redirect back to /oauth/authorize without re-prompting.
+    private static final int REAUTH_GRACE_SECONDS = 30;
 
     @Inject
     ClientRepository clientRepository;
@@ -82,7 +85,13 @@ public class AuthorizeFlow {
         boolean promptConsent = prompts.contains("consent");
 
         UserSession session = sessionService.findActiveSession(sessionToken).orElse(null);
-        if (session == null || promptLogin) {
+        // prompt=login: force re-auth, but only if the session is older than the
+        // re-auth grace window. Without this guard, every redirect-back from /login
+        // would re-trigger the prompt and loop forever.
+        boolean recentlyAuthenticated = session != null && session.createdAt != null
+            && Duration.between(session.createdAt, LocalDateTime.now()).getSeconds()
+                < REAUTH_GRACE_SECONDS;
+        if (session == null || (promptLogin && !recentlyAuthenticated)) {
             return AuthorizeResult.error(
                 promptNone ? "login_required" : "invalid_session",
                 promptLogin ? "prompt=login requires re-authentication" : "Login required"
@@ -123,28 +132,40 @@ public class AuthorizeFlow {
         if (!clientRepository.isRedirectUriAllowed(client.id, redirectUri)) {
             return AuthorizeResult.error("invalid_request", "redirect_uri is not registered");
         }
+        // From here on, redirect_uri is validated against the client's registered
+        // list, so RFC 6749 §4.1.2.1 says errors MUST go back via redirect with
+        // ?error=...&state=..., not as a JSON 400.
 
         if (!Scopes.isSubsetOf(scope, client.scopes)) {
-            return AuthorizeResult.error("invalid_scope", "Requested scope is not allowed for this client");
+            return errorRedirect(redirectUri, state, "invalid_scope",
+                "Requested scope is not allowed for this client");
         }
 
-        String resolvedMethod = codeChallengeMethod;
-        if (client.pkceRequired) {
-            if (codeChallenge == null || codeChallenge.isBlank()) {
-                return AuthorizeResult.error("invalid_request", "code_challenge is required");
-            }
+        // Validate code_challenge_method whenever a challenge is present, regardless of
+        // client.pkceRequired. Pairs with TokenFlow.fromAuthorizationCode, which now
+        // verifies any stored challenge — closes the downgrade where a non-PKCE-required
+        // client could submit a challenge with an unsupported method and have it silently
+        // dropped at /token.
+        String resolvedMethod = null;
+        boolean hasChallenge = codeChallenge != null && !codeChallenge.isBlank();
+        if (hasChallenge) {
             resolvedMethod = (codeChallengeMethod == null || codeChallengeMethod.isBlank())
                 ? "plain"
                 : codeChallengeMethod;
             if (!pkceVerifier.isMethodSupported(resolvedMethod)) {
-                return AuthorizeResult.error("invalid_request", "Unsupported code_challenge_method");
+                return errorRedirect(redirectUri, state, "invalid_request",
+                    "Unsupported code_challenge_method");
             }
+        } else if (client.pkceRequired) {
+            return errorRedirect(redirectUri, state, "invalid_request",
+                "code_challenge is required");
         }
 
         boolean hasConsent = !promptConsent && consentService.hasConsent(session.user.id, client.id, scope);
         if (!hasConsent) {
             if (promptNone) {
-                return AuthorizeResult.error("consent_required", "Consent is required but prompt=none was specified");
+                return errorRedirect(redirectUri, state, "consent_required",
+                    "Consent is required but prompt=none was specified");
             }
 
             PendingAuthorization pending = new PendingAuthorization();
@@ -226,6 +247,18 @@ public class AuthorizeFlow {
         ));
 
         return AuthorizeResult.success(URI.create(location));
+    }
+
+    private AuthorizeResult errorRedirect(String redirectUri, String state, String error, String description) {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        params.put("error", error);
+        if (description != null && !description.isBlank()) {
+            params.put("error_description", description);
+        }
+        if (state != null && !state.isBlank()) {
+            params.put("state", state);
+        }
+        return AuthorizeResult.errorRedirect(URI.create(buildRedirect(redirectUri, params)), error, description);
     }
 
     private String buildRedirect(String baseUri, Map<String, String> params) {

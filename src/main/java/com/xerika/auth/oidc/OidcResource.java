@@ -54,24 +54,18 @@ public class OidcResource {
         Set<String> scopes = Scopes.parse(scopeRaw);
 
         if (!claims.has("sub")) {
-            return Response.status(Response.Status.UNAUTHORIZED)
-                .entity(Map.of("error", "invalid_token"))
-                .build();
+            return invalidToken();
         }
 
         Optional<User> userOpt;
         try {
             userOpt = userRepository.findById(UUID.fromString(claims.get("sub").asText()));
         } catch (IllegalArgumentException e) {
-            return Response.status(Response.Status.UNAUTHORIZED)
-                .entity(Map.of("error", "invalid_token"))
-                .build();
+            return invalidToken();
         }
 
         if (userOpt.isEmpty() || !userOpt.get().enabled) {
-            return Response.status(Response.Status.UNAUTHORIZED)
-                .entity(Map.of("error", "invalid_token"))
-                .build();
+            return invalidToken();
         }
 
         User user = userOpt.get();
@@ -128,7 +122,7 @@ public class OidcResource {
         doc.put("request_uri_parameter_supported", false);
         doc.put("require_request_uri_registration", false);
         doc.put("claims_parameter_supported", true);
-        doc.put("request_object_signing_alg_values_supported", List.of("HS256", "none"));
+        doc.put("request_object_signing_alg_values_supported", List.of("HS256"));
         doc.put("device_authorization_endpoint", issuerUrl + "/oauth/device-authorization");
         doc.put("jwks_uri", issuerUrl + "/.well-known/jwks.json");
         doc.put("response_types_supported", List.of("code"));
@@ -165,6 +159,16 @@ public class OidcResource {
             ));
         }
         return Response.ok(new Jwks(jwksKeys)).build();
+    }
+
+    // RFC 6750 §3 mandates a WWW-Authenticate: Bearer header on 401 responses from
+    // a Bearer-protected resource. realm="userinfo" + error="invalid_token" lets
+    // strict OIDC clients (which expect this challenge) refresh their token.
+    private static Response invalidToken() {
+        return Response.status(Response.Status.UNAUTHORIZED)
+            .header("WWW-Authenticate", "Bearer realm=\"userinfo\", error=\"invalid_token\"")
+            .entity(Map.of("error", "invalid_token"))
+            .build();
     }
 
     private String base64UrlUnsigned(BigInteger value) {

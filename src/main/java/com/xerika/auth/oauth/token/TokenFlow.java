@@ -15,6 +15,7 @@ import com.xerika.auth.user.User;
 import com.xerika.auth.user.UserRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 
 import java.time.LocalDateTime;
 
@@ -45,6 +46,10 @@ public class TokenFlow {
     @Inject
     DeviceAuthorizationRepository deviceRepository;
 
+    // @Transactional so the refresh-rotation path (fromRefreshToken) can hold the
+    // PESSIMISTIC_WRITE lock + revoke + persist new token atomically. Other grant
+    // types only need read-or-single-write semantics, so the wrapper is harmless.
+    @Transactional
     public TokenResult token(
         String grantType,
         String code,
@@ -194,7 +199,11 @@ public class TokenFlow {
             return TokenResult.error("invalid_grant", "Code binding mismatch");
         }
 
-        if (client.pkceRequired) {
+        // Verify PKCE whenever the auth code carries a challenge, even if the client doesn't
+        // require it. Prevents the downgrade where a client opted into PKCE at /authorize but
+        // the server skipped verification here.
+        boolean codeHasChallenge = authCode.codeChallenge != null && !authCode.codeChallenge.isBlank();
+        if (client.pkceRequired || codeHasChallenge) {
             if (isBlank(codeVerifier)) {
                 return TokenResult.error("invalid_request", "code_verifier is required");
             }
@@ -228,13 +237,25 @@ public class TokenFlow {
         }
 
         String refreshTokenHash = Sha256.base64Url(refreshTokenRaw);
-        RefreshToken stored = refreshTokenRepository.findByTokenHash(refreshTokenHash).orElse(null);
+        // Row-lock for the read-check-revoke window. Without this, two parallel
+        // refreshes with the same raw token could both observe revoked=false and
+        // both succeed (token-family fork).
+        RefreshToken stored = refreshTokenRepository.findByTokenHashForUpdate(refreshTokenHash).orElse(null);
         if (stored == null) {
             return TokenResult.error("invalid_grant", "Invalid refresh token");
         }
 
-        if (stored.revoked || (stored.expiresAt != null && stored.expiresAt.isBefore(LocalDateTime.now()))) {
-            return TokenResult.error("invalid_grant", "Refresh token is revoked or expired");
+        // Reuse detection (OAuth 2.0 Security BCP §4.13): a presented-but-revoked
+        // refresh token means either replay or compromise — kill the whole family.
+        if (stored.revoked) {
+            if (stored.session != null) {
+                refreshTokenRepository.revokeBySessionId(stored.session.id);
+            }
+            return TokenResult.error("invalid_grant", "Refresh token revoked — session terminated");
+        }
+
+        if (stored.expiresAt != null && stored.expiresAt.isBefore(LocalDateTime.now())) {
+            return TokenResult.error("invalid_grant", "Refresh token expired");
         }
 
         if (stored.client == null || !client.id.equals(stored.client.id)) {
@@ -248,6 +269,9 @@ public class TokenFlow {
         }
 
         stored.revoked = true;
+        // Managed entity dirty-checks; explicit update kept for clarity. Runs in the
+        // same @Transactional as tokenIssuer.issue's persist below so both commit or
+        // roll back together.
         refreshTokenRepository.update(stored);
 
         return TokenResult.success(tokenIssuer.issue(user, client, session, client.scopes, null, null));
@@ -257,7 +281,10 @@ public class TokenFlow {
         if (!"confidential".equalsIgnoreCase(client.type)) {
             return true;
         }
-        return !isBlank(clientSecret) && clientSecret.equals(client.clientSecret);
+        // Argon2-verified (constant-time inside MessageDigest.isEqual) with a
+        // legacy plaintext fallback for not-yet-migrated rows.
+        return !isBlank(clientSecret)
+            && com.xerika.auth.client.ClientSecretHasher.verify(clientSecret, client.clientSecret);
     }
 
     private boolean isBlank(String value) {

@@ -2,7 +2,9 @@ package com.xerika.auth.bootstrap;
 
 import com.xerika.auth.client.Client;
 import com.xerika.auth.client.ClientRepository;
+import com.xerika.auth.client.ClientSecretHasher;
 import com.xerika.auth.client.RedirectUri;
+import org.jboss.logging.Logger;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -17,6 +19,9 @@ import java.util.UUID;
 @ApplicationScoped
 public class WebAppClientBootstrap {
 
+    private static final Logger LOG = Logger.getLogger(WebAppClientBootstrap.class);
+    private static final String SERVICE_CLIENT_BOOTSTRAP_SECRET = "service-secret-change-me";
+
     @Inject
     ClientRepository clientRepository;
 
@@ -25,6 +30,7 @@ public class WebAppClientBootstrap {
 
     @Transactional
     void onStart(@Observes StartupEvent ev) {
+        BootstrapLock.acquire(em);
         ensureWebApp();
         ensureServiceClient();
     }
@@ -64,14 +70,29 @@ public class WebAppClientBootstrap {
     }
 
     private void ensureServiceClient() {
-        if (clientRepository.findByClientId("service-client").isPresent()) {
+        Client existing = clientRepository.findByClientId("service-client").orElse(null);
+        if (existing != null) {
+            // One-time migration: pre-hashing deployments stored the bootstrap secret
+            // verbatim. Detect that exact value and upgrade to Argon2 so the DB no
+            // longer holds plaintext. Other plaintext secrets are admin-managed and
+            // get a warning instead — admin must rotate via /admin/clients/{id}.
+            if (SERVICE_CLIENT_BOOTSTRAP_SECRET.equals(existing.clientSecret)) {
+                existing.clientSecret = ClientSecretHasher.hash(SERVICE_CLIENT_BOOTSTRAP_SECRET);
+                em.merge(existing);
+                LOG.info("Migrated service-client legacy plaintext bootstrap secret to Argon2 hash");
+            } else if (existing.clientSecret != null
+                && !existing.clientSecret.isBlank()
+                && !ClientSecretHasher.isHashed(existing.clientSecret)) {
+                LOG.warnf("Client '%s' has a plaintext secret — admin should rotate via /admin/clients/{id}",
+                    existing.clientId);
+            }
             return;
         }
 
         Client client = new Client();
         client.id = UUID.randomUUID();
         client.clientId = "service-client";
-        client.clientSecret = "service-secret-change-me";
+        client.clientSecret = ClientSecretHasher.hash(SERVICE_CLIENT_BOOTSTRAP_SECRET);
         client.name = "Service Client";
         client.type = "confidential";
         client.grantTypes = "client_credentials";

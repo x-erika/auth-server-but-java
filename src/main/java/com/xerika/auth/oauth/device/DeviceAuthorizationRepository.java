@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -34,7 +35,9 @@ public class DeviceAuthorizationRepository {
         if (userCode == null || userCode.isEmpty()) {
             return Optional.empty();
         }
-        Response ptr = redis.execute("GET", RedisKeys.deviceByUserCode(userCode));
+        // RFC 8628 §6.1 — user_code SHOULD be case-insensitive and tolerant of
+        // separators (hyphens/whitespace) that the user might or might not type.
+        Response ptr = redis.execute("GET", RedisKeys.deviceByUserCode(normalizeUserCode(userCode)));
         if (ptr == null) {
             return Optional.empty();
         }
@@ -45,22 +48,40 @@ public class DeviceAuthorizationRepository {
         return findByDeviceCode(dc);
     }
 
-    public void persist(DeviceAuthorization auth) {
+    /**
+     * Atomic SET-NX for the user_code → device_code pointer. Returns true if the
+     * pointer was new; false if a collision was detected so the caller can
+     * regenerate a fresh user_code.
+     */
+    public boolean persist(DeviceAuthorization auth) {
         if (auth.expiresAt == null) {
             throw new IllegalArgumentException("DeviceAuthorization.expiresAt is required");
         }
         long ttl = Duration.between(LocalDateTime.now(), auth.expiresAt).getSeconds();
         if (ttl <= 0) {
-            return;
+            return false;
         }
         String mainKey = RedisKeys.deviceByCode(auth.deviceCode);
-        String pointerKey = RedisKeys.deviceByUserCode(auth.userCode);
+        String pointerKey = RedisKeys.deviceByUserCode(normalizeUserCode(auth.userCode));
+
+        // SET NX on the pointer first — if it already exists we have a user_code
+        // collision; bail without touching the main hash so the caller can retry.
+        Response ptrResult = redis.execute("SET", pointerKey, auth.deviceCode, "EX", Long.toString(ttl), "NX");
+        if (ptrResult == null) {
+            return false;
+        }
 
         Map<String, String> fields = toFields(auth);
         redis.execute("HSET", flatten(mainKey, fields));
         redis.execute("EXPIRE", mainKey, Long.toString(ttl));
+        return true;
+    }
 
-        redis.execute("SET", pointerKey, auth.deviceCode, "EX", Long.toString(ttl));
+    private static String normalizeUserCode(String userCode) {
+        if (userCode == null) {
+            return "";
+        }
+        return userCode.replaceAll("[\\s-]", "").toUpperCase(Locale.ROOT);
     }
 
     public DeviceAuthorization update(DeviceAuthorization auth) {

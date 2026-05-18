@@ -51,7 +51,10 @@ public class ScopeFilter implements ContainerRequestFilter {
         String token = BearerExtractor.extract(ctx);
         Optional<JsonNode> claimsOpt = jwtValidator.validate(token);
         if (claimsOpt.isEmpty()) {
+            // RFC 6750 §3: 401 from a Bearer-protected resource MUST carry a
+            // WWW-Authenticate challenge so RFC-strict clients refresh.
             ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED)
+                .header("WWW-Authenticate", "Bearer error=\"invalid_token\"")
                 .entity(Map.of("error", "invalid_token"))
                 .build());
             return;
@@ -70,7 +73,12 @@ public class ScopeFilter implements ContainerRequestFilter {
         }
 
         if (!granted) {
+            // RFC 6750 §3: 403 due to scope must also carry the challenge with
+            // error=insufficient_scope and the required scopes.
+            String scopeHeader = String.join(" ", required);
             ctx.abortWith(Response.status(Response.Status.FORBIDDEN)
+                .header("WWW-Authenticate",
+                    "Bearer error=\"insufficient_scope\", scope=\"" + scopeHeader + "\"")
                 .entity(Map.of(
                     "error", "insufficient_scope",
                     "required_scopes", List.of(required)

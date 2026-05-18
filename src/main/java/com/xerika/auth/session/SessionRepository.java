@@ -134,6 +134,25 @@ public class SessionRepository {
         return 1;
     }
 
+    public void invalidateCacheByUserId(UUID userId) {
+        List<String> tokens = em.createQuery(
+                "SELECT s.sessionToken FROM UserSession s WHERE s.user.id = :userId",
+                String.class)
+            .setParameter("userId", userId)
+            .getResultList();
+        for (String token : tokens) {
+            if (token == null) {
+                continue;
+            }
+            try {
+                redis.execute("DEL", RedisKeys.session(Sha256.base64Url(token)));
+            } catch (Exception e) {
+                LOG.warnf(e, "Redis DEL failed during invalidateCacheByUserId(%s) — token cache will go stale until TTL",
+                    userId);
+            }
+        }
+    }
+
     @Transactional
     public int deleteAllByUserId(UUID userId) {
         List<String> tokens = em.createQuery(

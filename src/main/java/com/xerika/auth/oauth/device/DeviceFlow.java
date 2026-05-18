@@ -57,13 +57,23 @@ public class DeviceFlow {
         DeviceAuthorization auth = new DeviceAuthorization();
         auth.id = UUID.randomUUID();
         auth.deviceCode = RandomTokens.urlSafe(32);
-        auth.userCode = generateUserCode();
         auth.clientId = client.clientId;
         auth.scope = scope;
         auth.status = DeviceAuthorization.STATUS_PENDING;
         auth.expiresAt = LocalDateTime.now().plusSeconds(DEVICE_CODE_TTL_SECONDS);
         auth.createdAt = LocalDateTime.now();
-        deviceRepository.persist(auth);
+
+        // Retry on user_code collision. ~28^8 keyspace makes hits vanishingly rare,
+        // but persist() does SET NX and tells us if the pointer key was already taken.
+        boolean persisted = false;
+        for (int attempt = 0; attempt < 5 && !persisted; attempt++) {
+            auth.userCode = generateUserCode();
+            persisted = deviceRepository.persist(auth);
+        }
+        if (!persisted) {
+            return DeviceAuthorizationResult.error("server_error",
+                "Could not allocate a unique user_code after retries");
+        }
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("device_code", auth.deviceCode);

@@ -124,6 +124,13 @@ public class OAuthResource {
                     + URLEncoder.encode(result.consentRequestId(), StandardCharsets.UTF_8);
                 return Response.seeOther(URI.create(location)).build();
             }
+            // RFC 6749 §4.1.2.1 error-redirect path: AuthorizeFlow has validated the
+            // redirect URI against the client's registered list before building this.
+            if (result.redirect() != null) {
+                return Response.seeOther(result.redirect()).build();
+            }
+            // Fallback (pre-validation errors): redirect URI not trusted yet, so
+            // we keep the JSON 400 to avoid bouncing the user to an unknown URI.
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(Map.of(
                     "error", result.error(),
@@ -162,12 +169,7 @@ public class OAuthResource {
         );
 
         if (!result.ok()) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                .entity(Map.of(
-                    "error", result.error(),
-                    "error_description", result.errorDescription()
-                ))
-                .build();
+            return oauthErrorResponse(result.error(), result.errorDescription());
         }
 
         return Response.ok(result.payload()).build();
@@ -185,15 +187,12 @@ public class OAuthResource {
         RevokeResult result = revokeFlow.revoke(token, tokenTypeHint, clientId, clientSecret);
 
         if (!result.ok()) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                .entity(Map.of(
-                    "error", result.error(),
-                    "error_description", result.errorDescription()
-                ))
-                .build();
+            return oauthErrorResponse(result.error(), result.errorDescription());
         }
 
-        return Response.noContent().build();
+        // RFC 7009 §2.2 prescribes 200 OK on successful revocation (including the
+        // "invalid token" case, which RevokeFlow already collapses into ok=true).
+        return Response.ok().build();
     }
 
     @POST
@@ -208,15 +207,25 @@ public class OAuthResource {
         IntrospectResult result = introspectFlow.introspect(token, clientId, clientSecret);
 
         if (!result.ok()) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                .entity(Map.of(
-                    "error", result.error(),
-                    "error_description", result.errorDescription()
-                ))
-                .build();
+            return oauthErrorResponse(result.error(), result.errorDescription());
         }
 
         return Response.ok(result.payload()).build();
+    }
+
+    // RFC 6749 §5.2 — invalid_client gets 401 (with WWW-Authenticate when HTTP
+    // Basic was used, which we don't accept — client_secret_post only); other
+    // errors get 400. Centralised so /token, /revoke, /introspect stay consistent.
+    private static Response oauthErrorResponse(String error, String description) {
+        Response.Status status = "invalid_client".equals(error)
+            ? Response.Status.UNAUTHORIZED
+            : Response.Status.BAD_REQUEST;
+        return Response.status(status)
+            .entity(Map.of(
+                "error", error,
+                "error_description", description == null ? "" : description
+            ))
+            .build();
     }
 
     @GET
@@ -228,11 +237,13 @@ public class OAuthResource {
         @Context HttpHeaders headers
     ) {
         String sessionToken = BearerExtractor.extract(headers);
-        LogoutResult result = logoutFlow.logout(idTokenHint, sessionToken);
+        LogoutResult result = logoutFlow.logout(idTokenHint, sessionToken, postLogoutRedirectUri);
 
         String finalRedirect = null;
-        if (postLogoutRedirectUri != null && !postLogoutRedirectUri.isBlank()) {
-            finalRedirect = postLogoutRedirectUri;
+        // Only honour the redirect after LogoutFlow validated it against the requester
+        // client's registered URIs — closes the open-redirect hole on /oauth/logout.
+        if (result.validatedPostLogoutRedirectUri() != null) {
+            finalRedirect = result.validatedPostLogoutRedirectUri();
             if (state != null && !state.isBlank()) {
                 String sep = finalRedirect.contains("?") ? "&" : "?";
                 finalRedirect = finalRedirect + sep + "state="

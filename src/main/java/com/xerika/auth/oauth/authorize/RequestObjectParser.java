@@ -29,27 +29,22 @@ public class RequestObjectParser {
         try {
             JsonNode header = MAPPER.readTree(Base64.getUrlDecoder().decode(parts[0]));
             JsonNode payload = MAPPER.readTree(Base64.getUrlDecoder().decode(parts[1]));
-            String alg = header.has("alg") ? header.get("alg").asText("none") : "none";
+            String alg = header.has("alg") ? header.get("alg").asText() : null;
 
-            if ("none".equalsIgnoreCase(alg)) {
-                if ("confidential".equals(client.type)) {
-                    // Confidential clients must sign request objects
-                    return Optional.empty();
-                }
-                return Optional.of(payload);
+            // alg=none is rejected outright — a request object can override
+            // redirect_uri / scope / code_challenge, so an unsigned blob from a
+            // public client is enough to defeat PKCE binding. Only HS256 with the
+            // client's registered secret is accepted.
+            if (!"HS256".equalsIgnoreCase(alg)) {
+                return Optional.empty();
             }
-
-            if ("HS256".equalsIgnoreCase(alg)) {
-                if (parts.length != 3 || client.clientSecret == null) {
-                    return Optional.empty();
-                }
-                if (!verifyHs256(parts[0] + "." + parts[1], parts[2], client.clientSecret)) {
-                    return Optional.empty();
-                }
-                return Optional.of(payload);
+            if (parts.length != 3 || client.clientSecret == null || client.clientSecret.isBlank()) {
+                return Optional.empty();
             }
-
-            return Optional.empty();
+            if (!verifyHs256(parts[0] + "." + parts[1], parts[2], client.clientSecret)) {
+                return Optional.empty();
+            }
+            return Optional.of(payload);
         } catch (Exception e) {
             return Optional.empty();
         }

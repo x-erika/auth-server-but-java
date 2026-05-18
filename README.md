@@ -31,13 +31,14 @@ Readiness probe: `GET /q/health/ready` (returns `UP` only when both Postgres and
 
 | Feature | What's implemented |
 |---|---|
-| **OAuth 2.0** | authorization_code, refresh_token (with rotation), client_credentials, device_code (RFC 8628), revoke (RFC 7009), introspect (RFC 7662) |
-| **OIDC** | id_token, /userinfo, discovery doc, JWKS, RP-initiated logout, nonce, auth_time, prompt, max_age, consent screen, request object (HS256 + none), claims parameter |
-| **JWT** | RS256 with persistent RSA keypair, full claims (iss/sub/aud/exp/iat/jti/...), JwtValidator, kid header, multi-key rotation with kid-based key selection on verify |
-| **PKCE** | S256 + plain, enforced for public clients |
-| **RBAC** | Role entity + assignment, role hierarchy (parent_id, cycle-checked) with recursive effective-role resolution, `@RequiresRole` filter, `@RequiresScope` (JWT scope-based), roles claim in JWT, admin endpoints to manage role assignment & hierarchy |
-| **SSO** | Shared session (cookie + Bearer), browser-redirect OAuth flow, consent screen, RP-initiated logout, front-channel logout (iframe propagation), back-channel logout (signed logout_token POST), auth_time + sid in tokens |
+| **OAuth 2.0** | authorization_code, refresh_token (rotation + reuse-detection family revoke per OAuth 2.0 Security BCP §4.13), client_credentials, device_code (RFC 8628), revoke (RFC 7009, returns 200), introspect (RFC 7662) |
+| **OIDC** | id_token (with `sid` for back/front-channel logout), /userinfo, discovery doc, JWKS, RP-initiated logout (`post_logout_redirect_uri` validated against client.redirectUris), nonce, auth_time, prompt (with re-auth grace window so prompt=login doesn't loop), max_age, consent screen, request object (HS256 only — `alg=none` rejected), claims parameter |
+| **JWT** | RS256 with persistent RSA keypair, full claims (iss/sub/aud/exp/iat/jti/typ/...), `typ: at+jwt` on access tokens (RFC 9068), strict validation (`alg` locked to RS256, `iss`+`exp` required, optional `aud` enforcement via overload), `kid` header, multi-key rotation with atomic write (`tmp` + ATOMIC_MOVE) and POSIX 600 on private keys |
+| **PKCE** | S256 + plain. Verified whenever the auth code carries a challenge — not only when `client.pkceRequired=true` — so a public client opting in can't be downgraded |
+| **RBAC** | Role entity + assignment, role hierarchy (parent_id, cycle-checked at repo level with `SELECT FOR UPDATE` so concurrent admin edits can't race), recursive effective-role resolution, `@RequiresRole` filter, `@RequiresScope` (JWT scope-based, with `WWW-Authenticate` on 401/403 per RFC 6750), roles claim in JWT |
+| **SSO** | Shared session (cookie + Bearer, case-insensitive scheme per RFC 6750), browser-redirect OAuth flow with CSRF-protected `/login` POST (double-submit cookie), consent screen, RP-initiated logout, front-channel logout (iframe propagation), back-channel logout (signed logout_token POST), auth_time + sid in tokens |
 | **Rate limiting** | Lua-atomic INCR+EXPIRE on `/auth/login` (per email + per IP), `/auth/signup` (per IP), `/auth/verify-email` (per IP), `/oauth/device-authorization` (per client_id). Fail-open if Redis is down. Returns 429 with `Retry-After`. |
+| **Hardening** | Client secrets Argon2id-hashed at rest (constant-time verify, dual-mode for legacy rows). Login timing-equalised against missing/disabled/unverified accounts (always runs Argon2). `/login` `return_to` and `/oauth/logout` `post_logout_redirect_uri` validated to block open redirects. Signup uniqueness check + `em.flush()` translates `ConstraintViolationException` to 409 instead of 500. `pg_advisory_xact_lock` serialises bootstrap inserts across replicas. Hourly `@Scheduled` sweep of expired/revoked refresh tokens. |
 
 ## Standards
 
@@ -50,8 +51,10 @@ Readiness probe: `GET /q/health/ready` (returns `UP` only when both Postgres and
 | [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) | PKCE | `code_challenge` / `code_verifier` with S256 + plain |
 | [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) | Token Revocation | `POST /oauth/revoke` |
 | [RFC 7662](https://datatracker.ietf.org/doc/html/rfc7662) | Token Introspection | `POST /oauth/introspect` |
-| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) | Device Authorization Grant | `POST /oauth/device-authorization` + `POST /oauth/device/verify` |
+| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) | Device Authorization Grant | `POST /oauth/device-authorization` + `POST /oauth/device/verify` (user_code case-insensitive + hyphen-tolerant per §6.1, SET-NX retry on collision) |
 | [RFC 6585](https://datatracker.ietf.org/doc/html/rfc6585) | Additional HTTP Status Codes | `429 Too Many Requests` + `Retry-After` for rate limits |
+| [RFC 9068](https://datatracker.ietf.org/doc/html/rfc9068) | JWT Profile for OAuth 2.0 Access Tokens | `typ: at+jwt` header + `client_id` claim on access tokens |
+| [OAuth 2.0 Security BCP](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics) | Browser-based + native client guidance | Refresh-token rotation with reuse detection (§4.13), PKCE-on-by-default for opt-in public clients |
 
 ### JWT / JOSE (IETF RFCs)
 
@@ -132,10 +135,10 @@ Each subpackage is self-contained: entity, repository, flow/service, and DTOs al
 
 ## Token model
 
-- **Session token** (opaque, 8h) — for browser/admin sessions. Accepted via `Authorization: Bearer`, `X-Session-Token` header, or `session_token` cookie. Cached in Redis by `sha256(token)`; Postgres is source of truth.
-- **Access token** (JWT RS256, 15min) — for resource server APIs. Carries `sub`, `aud`, `iss`, `exp`, `iat`, `jti`, `scope`, `roles`, `sid`, `email`, `username`.
-- **Refresh token** (opaque, 30 days, hashed in DB) — rotated on each use.
-- **ID token** (JWT RS256, 1h) — OIDC identity assertion, issued only with `openid` scope.
+- **Session token** (opaque, 8h) — for browser/admin sessions. Accepted via `Authorization: Bearer` (scheme case-insensitive), `X-Session-Token` header, or `session_token` cookie (HttpOnly, SameSite=Lax, Secure in `%prod`). Cached in Redis by `sha256(token)`; Postgres is source of truth.
+- **Access token** (JWT RS256, 15min, `typ: at+jwt`) — for resource server APIs. Carries `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, `client_id`, `scope`, `roles`, `sid`, `email`, `username`.
+- **Refresh token** (opaque, 30 days, sha256-hashed in DB) — rotated on each use. A presented-but-revoked token triggers family revocation: every refresh token bound to that session is invalidated and the session itself is dropped on next request.
+- **ID token** (JWT RS256, 1h) — OIDC identity assertion, issued only with `openid` scope. Carries `sid` so back-channel / front-channel logout receivers can resolve the session.
 
 JWTs are signed with a persistent RSA-2048 keypair stored at `~/.xerika/auth/keys/`, named `<kid>.private.pem` / `<kid>.public.pem` per key, with `active.kid` selecting the current signing key. `POST /admin/keys/rotate` generates a new keypair and rotates the active kid in place — old kids remain in the JWKS so tokens already in flight continue to verify until they expire.
 
@@ -145,14 +148,15 @@ This is a **learning project** showcasing the core auth primitives. It is **not 
 
 - Email verification token is returned in the signup API response (in production, would be emailed)
 - No audit log
-- Request object verification only supports `HS256` (with `client_secret`) and `none` (public clients) — no asymmetric per-client keys / JWKS-by-reference
-- Default bootstrap credentials are committed to the repo — rotate before exposing the server beyond localhost
+- Request object verification only supports `HS256` (with `client_secret`) — no asymmetric per-client keys / JWKS-by-reference. `alg=none` is rejected outright.
+- Default bootstrap credentials are committed to the repo (admin@gmail.com / admin123, service-client secret seeded then hashed) — rotate before exposing the server beyond localhost
 - `X-Forwarded-For` is trusted as-is for IP-based rate limits (needs trusted-proxy configuration before exposing to the internet)
 - Successful logins also consume the per-email rate-limit budget (intentional simplicity; can be split into failure-only buckets later)
-- User profile updates via admin do not invalidate cached sessions — email/username changes appear stale until session TTL or logout
+- Client secrets are stored Argon2id-hashed for new writes; pre-existing plaintext rows still verify via a constant-time fallback until rotated. Admins should rotate any pre-hash-migration secrets via `PUT /admin/clients/{id}` and inspect the startup log for any "plaintext secret" warnings.
+- `%prod` profile requires `DB_*` and `REDIS_*` env vars (no fallbacks). `auth.cookie.secure=true` in prod so the session/CSRF cookies refuse plain HTTP.
 
 See `API.md` § "Deferred" notes for the full list of unfinished items.
 
 ---
 
-Built with Quarkus 3.30, Java 21, PostgreSQL 17, Redis 6, Flyway, Hibernate ORM, BouncyCastle (Argon2), Smallrye JWT Build, Smallrye Health, Qute (templates).
+Built with Quarkus 3.30, Java 21, PostgreSQL 17, Redis 6, Flyway, Hibernate ORM, BouncyCastle (Argon2id), Smallrye JWT Build, Smallrye Health, Quarkus Scheduler (refresh-token sweep), Qute (templates).

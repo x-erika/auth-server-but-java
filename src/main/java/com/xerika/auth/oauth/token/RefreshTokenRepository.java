@@ -2,6 +2,7 @@ package com.xerika.auth.oauth.token;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
 import jakarta.transaction.Transactional;
 
@@ -21,6 +22,17 @@ public class RefreshTokenRepository {
     public Optional<RefreshToken> findByTokenHash(String tokenHash) {
         return em.createQuery("SELECT r FROM RefreshToken r WHERE r.tokenHash = :tokenHash", RefreshToken.class)
             .setParameter("tokenHash", tokenHash)
+            .getResultStream()
+            .findFirst();
+    }
+
+    // Row-locking lookup for the refresh-rotation path. Must be called from inside
+    // an enclosing @Transactional so the lock is held across the read/check/revoke
+    // sequence. Translates to Postgres SELECT ... FOR UPDATE.
+    public Optional<RefreshToken> findByTokenHashForUpdate(String tokenHash) {
+        return em.createQuery("SELECT r FROM RefreshToken r WHERE r.tokenHash = :tokenHash", RefreshToken.class)
+            .setParameter("tokenHash", tokenHash)
+            .setLockMode(LockModeType.PESSIMISTIC_WRITE)
             .getResultStream()
             .findFirst();
     }

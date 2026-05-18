@@ -20,8 +20,14 @@ public class UserRepository {
     }
 
     public Optional<User> findByEmail(String email) {
-        return em.createQuery("SELECT u FROM User u WHERE u.email = :email", User.class)
-            .setParameter("email", email)
+        if (email == null) {
+            return Optional.empty();
+        }
+        // Case-insensitive comparison so existing mixed-case rows still resolve
+        // while new writes are normalised to lowercase (signup/admin paths).
+        String normalized = email.trim().toLowerCase();
+        return em.createQuery("SELECT u FROM User u WHERE LOWER(u.email) = :email", User.class)
+            .setParameter("email", normalized)
             .getResultStream()
             .findFirst();
     }

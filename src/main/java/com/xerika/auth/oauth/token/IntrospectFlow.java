@@ -54,7 +54,8 @@ public class IntrospectFlow {
         if (!"confidential".equalsIgnoreCase(client.type)) {
             return true;
         }
-        return !isBlank(clientSecret) && clientSecret.equals(client.clientSecret);
+        return !isBlank(clientSecret)
+            && com.xerika.auth.client.ClientSecretHasher.verify(clientSecret, client.clientSecret);
     }
 
     private boolean isBlank(String value) {

@@ -11,6 +11,7 @@ import com.xerika.auth.session.UserSession;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +22,8 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class LogoutFlow {
+
+    private static final Logger LOG = Logger.getLogger(LogoutFlow.class);
 
     @Inject
     JwtValidator jwtValidator;
@@ -43,10 +46,29 @@ public class LogoutFlow {
     @ConfigProperty(name = "auth.issuer.url", defaultValue = "http://localhost:8080")
     String issuerUrl;
 
-    public LogoutResult logout(String idTokenHint, String sessionToken) {
+    public LogoutResult logout(String idTokenHint, String sessionToken, String postLogoutRedirectUri) {
+        // Validate post_logout_redirect_uri against the requester client's registered
+        // redirect URIs. Requires id_token_hint to identify the client (no spec-compliant
+        // way to resolve client without it). Drops the redirect silently if not registered
+        // — drop > error to avoid leaking which URIs are registered.
+        // Trade-off: piggybacks on client.redirectUris (OAuth callback list) rather than
+        // a dedicated post_logout_redirect_uris column. OIDC RP-Initiated Logout treats
+        // them as separate sets; for this learning project we collapse them.
+        String validatedPostLogoutRedirect = null;
+        if (postLogoutRedirectUri != null && !postLogoutRedirectUri.isBlank()) {
+            Client requester = resolveClientFromIdTokenHint(idTokenHint);
+            if (requester != null
+                && clientRepository.isRedirectUriAllowed(requester.id, postLogoutRedirectUri)) {
+                validatedPostLogoutRedirect = postLogoutRedirectUri;
+            } else {
+                LOG.warnf("Dropped post_logout_redirect_uri '%s' — not registered or id_token_hint missing",
+                    postLogoutRedirectUri);
+            }
+        }
+
         UUID sessionId = resolveSessionId(idTokenHint, sessionToken);
         if (sessionId == null) {
-            return LogoutResult.none();
+            return LogoutResult.none(validatedPostLogoutRedirect);
         }
 
         UUID userId = sessionRepository.findById(sessionId)
@@ -72,7 +94,28 @@ public class LogoutFlow {
             }
         }
 
-        return new LogoutResult(true, frontchannelUris);
+        return new LogoutResult(true, frontchannelUris, validatedPostLogoutRedirect);
+    }
+
+    private Client resolveClientFromIdTokenHint(String idTokenHint) {
+        if (idTokenHint == null || idTokenHint.isBlank()) {
+            return null;
+        }
+        Optional<JsonNode> claims = jwtValidator.validate(idTokenHint);
+        if (claims.isEmpty()) {
+            return null;
+        }
+        JsonNode aud = claims.get().get("aud");
+        if (aud == null) {
+            return null;
+        }
+        String clientId = aud.isArray() && !aud.isEmpty()
+            ? aud.get(0).asText(null)
+            : aud.asText(null);
+        if (clientId == null || clientId.isBlank()) {
+            return null;
+        }
+        return clientRepository.findByClientId(clientId).orElse(null);
     }
 
     private String buildFrontchannelUrl(String uri, UUID sessionId) {

@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -21,6 +23,7 @@ import java.security.PublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -188,7 +191,23 @@ public class RsaKeyProvider {
         String base64 = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
             .encodeToString(encoded);
         String pem = "-----BEGIN " + type + "-----\n" + base64 + "\n-----END " + type + "-----\n";
-        Files.writeString(path, pem, StandardCharsets.US_ASCII);
+        // Write tmp + ATOMIC_MOVE so a crash mid-write can't leave a half-written
+        // .pem on disk — private keys are the worst-case (corrupt file blocks startup).
+        Path tmp = path.resolveSibling(path.getFileName().toString() + ".tmp");
+        Files.writeString(tmp, pem, StandardCharsets.US_ASCII);
+        Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        // Private key files: tighten to owner-only on POSIX. Windows NTFS uses ACLs
+        // that need a different API — accept the umask default there (learning project).
+        if ("PRIVATE KEY".equals(type)) {
+            try {
+                Files.setPosixFilePermissions(path, EnumSet.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE
+                ));
+            } catch (UnsupportedOperationException ignored) {
+                // Non-POSIX filesystem (Windows).
+            }
+        }
     }
 
     private String computeKid(PublicKey key) throws NoSuchAlgorithmException {

@@ -13,6 +13,9 @@ import com.xerika.auth.user.User;
 import com.xerika.auth.user.UserRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.PersistenceException;
 import jakarta.transaction.Transactional;
 
 import java.time.LocalDateTime;
@@ -38,6 +41,9 @@ public class SignupFlow {
     @Inject
     EmailVerificationRepository emailVerificationRepository;
 
+    @PersistenceContext
+    EntityManager em;
+
     @Transactional
     public SignupResult signup(SignupRequest req) {
         if (req == null) {
@@ -52,7 +58,12 @@ public class SignupFlow {
             return SignupResult.error("invalid_request", "password must be at least 8 characters");
         }
 
-        if (userRepository.findByEmail(req.email()).isPresent()) {
+        // Normalise email so `Alice@x.com` and `alice@x.com` resolve to the same
+        // account at signup, login, and uniqueness check. Pairs with the
+        // case-insensitive lookup in UserRepository.findByEmail.
+        String normalizedEmail = req.email().trim().toLowerCase();
+
+        if (userRepository.findByEmail(normalizedEmail).isPresent()) {
             return SignupResult.error("conflict", "email already registered");
         }
 
@@ -62,7 +73,7 @@ public class SignupFlow {
 
         User user = new User();
         user.id = UUID.randomUUID();
-        user.email = req.email();
+        user.email = normalizedEmail;
         user.emailVerified = false;
         user.username = req.username();
         user.firstName = req.firstName();
@@ -70,7 +81,16 @@ public class SignupFlow {
         user.enabled = true;
         user.createdAt = LocalDateTime.now();
         user.updatedAt = LocalDateTime.now();
-        userRepository.persist(user);
+        try {
+            userRepository.persist(user);
+            // Force INSERT now so the unique-constraint check happens inside this
+            // method instead of at @Transactional commit (where the exception would
+            // surface as a 500). Closes the TOCTOU race where two parallel signups
+            // both pass findByEmail/Username before either persists.
+            em.flush();
+        } catch (PersistenceException e) {
+            return SignupResult.error("conflict", "email or username already registered");
+        }
 
         Map<String, String> argon2 = Argon2Hasher.hash(req.password());
         Credential credential = new Credential();

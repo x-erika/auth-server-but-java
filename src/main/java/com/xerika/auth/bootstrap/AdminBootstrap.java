@@ -11,6 +11,8 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import jakarta.transaction.Transactional;
 
 import java.time.LocalDateTime;
@@ -32,8 +34,14 @@ public class AdminBootstrap {
     @Inject
     RoleRepository roleRepository;
 
+    @PersistenceContext
+    EntityManager em;
+
     @Transactional
     void onStart(@Observes StartupEvent ev) {
+        // Serialise concurrent startup on multi-replica deploys. Released at txn end.
+        BootstrapLock.acquire(em);
+
         roleBootstrap.ensureCoreRoles();
 
         User user = userRepository.findByEmail("admin@gmail.com").orElseGet(this::createAdminUser);
@@ -43,6 +51,10 @@ public class AdminBootstrap {
 
         if (!roleRepository.isAssigned(user.id, adminRole.id)) {
             roleRepository.assignToUser(user.id, adminRole.id);
+            // assignToUser uses native SQL that bypasses JPA dirty-checking, so
+            // the in-memory User.roles collection on `user` is now stale. Refresh
+            // before any downstream code in this method could touch it.
+            em.refresh(user);
         }
     }
 

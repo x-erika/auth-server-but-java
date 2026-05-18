@@ -68,7 +68,7 @@ public class TokenIssuer {
         String accessToken = jwtSigner.signAccessToken(
             user.id.toString(),
             client.clientId,
-            buildAccessTokenClaims(user, session, roles, scope, claimsRequest)
+            buildAccessTokenClaims(user, client, session, roles, scope, claimsRequest)
         );
 
         String refreshTokenRaw = RandomTokens.urlSafe(48);
@@ -99,7 +99,7 @@ public class TokenIssuer {
                 client.clientId,
                 nonce,
                 authTime,
-                buildIdTokenClaims(user, scopes, claimsRequest)
+                buildIdTokenClaims(user, session, scopes, claimsRequest)
             );
             response.put("id_token", idToken);
         }
@@ -109,12 +109,15 @@ public class TokenIssuer {
 
     private Map<String, Object> buildAccessTokenClaims(
         User user,
+        Client client,
         UserSession session,
         List<String> roles,
         String scope,
         ClaimsRequest claimsRequest
     ) {
         Map<String, Object> claims = new LinkedHashMap<>();
+        // RFC 9068 §2.2 — client_id identifies which client requested the token.
+        claims.put("client_id", client.clientId);
         claims.put("email", user.email);
         claims.put("username", user.username);
         claims.put("sid", session.id.toString());
@@ -126,8 +129,12 @@ public class TokenIssuer {
         return claims;
     }
 
-    private Map<String, Object> buildIdTokenClaims(User user, Set<String> scopes, ClaimsRequest claimsRequest) {
+    private Map<String, Object> buildIdTokenClaims(User user, UserSession session, Set<String> scopes, ClaimsRequest claimsRequest) {
         Map<String, Object> claims = new LinkedHashMap<>();
+        // sid is required by OIDC Back-Channel Logout 1.0 §2.1 for the OP to identify
+        // which session a logout_token targets; also lets LogoutFlow.resolveSessionId
+        // pull a session from id_token_hint without falling back to the session cookie.
+        claims.put("sid", session.id.toString());
 
         boolean includeEmail = scopes.contains("email") || claimsRequest.idTokenClaims().contains("email");
         boolean includeEmailVerified = scopes.contains("email") || claimsRequest.idTokenClaims().contains("email_verified");

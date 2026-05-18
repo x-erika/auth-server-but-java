@@ -35,7 +35,9 @@ public final class BearerExtractor {
 
     private static String extractFromHeaders(java.util.function.Function<String, String> getter) {
         String bearer = getter.apply(HttpHeaders.AUTHORIZATION);
-        if (bearer != null && bearer.startsWith("Bearer ")) {
+        // RFC 6750 §2.1: the "Bearer" scheme name is case-insensitive.
+        if (bearer != null && bearer.length() > 7
+            && bearer.regionMatches(true, 0, "Bearer ", 0, 7)) {
             return bearer.substring(7).trim();
         }
         return getter.apply("X-Session-Token");

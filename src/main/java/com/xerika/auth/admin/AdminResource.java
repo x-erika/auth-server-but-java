@@ -10,6 +10,7 @@ import com.xerika.auth.admin.dto.UserSummary;
 import com.xerika.auth.admin.dto.UserUpdateRequest;
 import com.xerika.auth.client.Client;
 import com.xerika.auth.client.ClientRepository;
+import com.xerika.auth.client.ClientSecretHasher;
 import com.xerika.auth.client.RedirectUri;
 import com.xerika.auth.common.crypto.Argon2Hasher;
 import com.xerika.auth.common.crypto.RsaKeyProvider;
@@ -185,16 +186,14 @@ public class AdminResource {
 
         Role child = childOpt.get();
         Role parent = parentOpt.get();
-        if (child.id.equals(parent.id)) {
+        // Cycle + self-parent checks now live in the repo (transactional + locked),
+        // so they hold under concurrent setParent calls.
+        try {
+            roleRepository.setParent(child.id, parent.id);
+        } catch (RoleRepository.RoleCycleException e) {
             return Response.status(Response.Status.BAD_REQUEST)
-                .entity(Map.of("message", "role cannot be its own parent")).build();
+                .entity(Map.of("message", e.getMessage())).build();
         }
-        if (wouldCreateCycle(child.id, parent.id)) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                .entity(Map.of("message", "cycle detected in role hierarchy")).build();
-        }
-
-        roleRepository.setParent(child.id, parent.id);
         return Response.ok(Map.of(
             "message", "parent set",
             "child", childName,
@@ -280,7 +279,11 @@ public class AdminResource {
         Client client = new Client();
         client.id = UUID.randomUUID();
         client.clientId = body.clientId();
-        client.clientSecret = body.clientSecret();
+        // Hash the secret at rest. Plaintext input is consumed only here; the
+        // admin must record it now because the server can't recover it later.
+        client.clientSecret = body.clientSecret() == null || body.clientSecret().isBlank()
+            ? null
+            : ClientSecretHasher.hash(body.clientSecret());
         client.name = body.name();
         client.type = body.type() == null ? "public" : body.type();
         client.scopes = body.scopes();
@@ -322,7 +325,7 @@ public class AdminResource {
         }
 
         if (body.clientSecret() != null && !body.clientSecret().isBlank()) {
-            existing.clientSecret = body.clientSecret();
+            existing.clientSecret = ClientSecretHasher.hash(body.clientSecret());
         }
         if (body.name() != null) existing.name = body.name();
         if (body.type() != null) existing.type = body.type();
@@ -514,7 +517,8 @@ public class AdminResource {
                     "email, username, password (>=8 chars) are required"))
                 .build();
         }
-        if (userRepository.findByEmail(body.email()).isPresent()) {
+        String normalizedEmail = body.email().trim().toLowerCase();
+        if (userRepository.findByEmail(normalizedEmail).isPresent()) {
             return Response.status(Response.Status.CONFLICT)
                 .entity(Map.of("message", "email already registered")).build();
         }
@@ -525,7 +529,7 @@ public class AdminResource {
 
         User user = new User();
         user.id = UUID.randomUUID();
-        user.email = body.email();
+        user.email = normalizedEmail;
         user.username = body.username();
         user.firstName = body.firstName();
         user.lastName = body.lastName();
@@ -578,18 +582,36 @@ public class AdminResource {
                 .entity(Map.of("message", "user not found")).build();
         }
 
+        boolean oldEmailVerified = user.emailVerified;
+        boolean kickSessions = false;
+        boolean emailVerifiedCacheOnly = false;
+
         if (body.firstName() != null) user.firstName = body.firstName();
         if (body.lastName() != null) user.lastName = body.lastName();
         if (body.enabled() != null) {
             user.enabled = body.enabled();
-            if (!body.enabled()) {
-                refreshTokenRepository.revokeBySessionId(null); // no-op safeguard
-                sessionRepository.deleteAllByUserId(userId);
+            if (!body.enabled()) kickSessions = true;
+        }
+        
+        if (body.emailVerified() != null) {
+            user.emailVerified = body.emailVerified();
+            if (oldEmailVerified && !body.emailVerified()) {
+                kickSessions = true;
+            } else if (oldEmailVerified != body.emailVerified()) {
+                emailVerifiedCacheOnly = true;
             }
         }
-        if (body.emailVerified() != null) user.emailVerified = body.emailVerified();
+
+        if (kickSessions) {
+            sessionRepository.deleteAllByUserId(userId);
+        }
+
         user.updatedAt = java.time.LocalDateTime.now();
         userRepository.update(user);
+
+        if (!kickSessions && emailVerifiedCacheOnly) {
+            sessionRepository.invalidateCacheByUserId(userId);
+        }
 
         if (body.newPassword() != null && !body.newPassword().isBlank()) {
             if (body.newPassword().length() < 8) {
@@ -617,7 +639,6 @@ public class AdminResource {
                 cred.updatedAt = java.time.LocalDateTime.now();
                 credentialRepository.update(cred);
             }
-            // password change invalidates active sessions
             sessionRepository.deleteAllByUserId(userId);
         }
 
@@ -647,24 +668,9 @@ public class AdminResource {
                 .entity(Map.of("message", "cannot delete your own account")).build();
         }
 
+        sessionRepository.deleteAllByUserId(userId);
         userRepository.delete(userId);
         return Response.noContent().build();
     }
 
-    private boolean wouldCreateCycle(UUID childId, UUID newParentId) {
-        java.util.Map<UUID, UUID> parentOf = new java.util.HashMap<>();
-        for (Role r : roleRepository.findAll()) {
-            parentOf.put(r.id, r.parentId);
-        }
-
-        UUID cursor = newParentId;
-        java.util.Set<UUID> seen = new java.util.HashSet<>();
-        while (cursor != null) {
-            if (cursor.equals(childId) || !seen.add(cursor)) {
-                return true;
-            }
-            cursor = parentOf.get(cursor);
-        }
-        return false;
-    }
 }
