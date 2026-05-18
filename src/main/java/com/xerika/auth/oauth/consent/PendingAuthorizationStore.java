@@ -1,51 +1,86 @@
 package com.xerika.auth.oauth.consent;
 
+import com.xerika.auth.common.redis.RedisJson;
+import com.xerika.auth.common.redis.RedisKeys;
+import com.xerika.auth.common.redis.RedisLua;
+import io.quarkus.redis.datasource.RedisDataSource;
+import io.vertx.mutiny.redis.client.Response;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Iterator;
-import java.util.Map;
+import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 @ApplicationScoped
 public class PendingAuthorizationStore {
 
-    private final Map<String, PendingAuthorization> store = new ConcurrentHashMap<>();
+    @Inject
+    RedisDataSource redis;
+
+    @Inject
+    RedisJson json;
+
+    @Inject
+    RedisLua lua;
+
+    @ConfigProperty(name = "auth.redis.pending-auth.ttl-seconds", defaultValue = "600")
+    long defaultTtlSeconds;
 
     public void put(PendingAuthorization pending) {
-        store.put(pending.requestId, pending);
+        if (pending == null || pending.requestId == null || pending.requestId.isEmpty()) {
+            throw new IllegalArgumentException("PendingAuthorization.requestId is required");
+        }
+        long ttl = defaultTtlSeconds;
+        if (pending.expiresAt != null) {
+            long fromExpires = Duration.between(LocalDateTime.now(), pending.expiresAt).getSeconds();
+            if (fromExpires > 0) {
+                ttl = fromExpires;
+            } else {
+                return;
+            }
+        }
+        String key = RedisKeys.pendingAuth(pending.requestId);
+        redis.execute("SET", key, json.stringify(pending), "EX", Long.toString(ttl));
     }
 
     public Optional<PendingAuthorization> get(String requestId) {
-        cleanupExpired();
-        PendingAuthorization pending = requestId == null ? null : store.get(requestId);
-        if (pending == null) {
+        if (requestId == null || requestId.isEmpty()) {
             return Optional.empty();
         }
-        if (pending.expiresAt != null && pending.expiresAt.isBefore(LocalDateTime.now())) {
-            store.remove(requestId);
-            return Optional.empty();
-        }
-        return Optional.of(pending);
+        Response r = redis.execute("GET", RedisKeys.pendingAuth(requestId));
+        return decode(r);
     }
 
     public Optional<PendingAuthorization> take(String requestId) {
-        Optional<PendingAuthorization> result = get(requestId);
-        if (result.isPresent()) {
-            store.remove(requestId);
+        if (requestId == null || requestId.isEmpty()) {
+            return Optional.empty();
         }
-        return result;
+        Response r = lua.eval(
+            RedisLua.GET_AND_DEL,
+            List.of(RedisKeys.pendingAuth(requestId)),
+            List.of()
+        );
+        return decode(r);
     }
 
-    private void cleanupExpired() {
-        LocalDateTime now = LocalDateTime.now();
-        Iterator<Map.Entry<String, PendingAuthorization>> it = store.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<String, PendingAuthorization> e = it.next();
-            if (e.getValue().expiresAt != null && e.getValue().expiresAt.isBefore(now)) {
-                it.remove();
-            }
+    private Optional<PendingAuthorization> decode(Response r) {
+        if (r == null) {
+            return Optional.empty();
         }
+        String raw = r.toString();
+        if (raw == null || raw.isEmpty()) {
+            return Optional.empty();
+        }
+        PendingAuthorization p = json.parse(raw, PendingAuthorization.class);
+        if (p == null) {
+            return Optional.empty();
+        }
+        if (p.expiresAt != null && p.expiresAt.isBefore(LocalDateTime.now())) {
+            return Optional.empty();
+        }
+        return Optional.of(p);
     }
 }

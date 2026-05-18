@@ -1,5 +1,8 @@
 package com.xerika.auth.signup;
 
+import com.xerika.auth.common.ratelimit.RateLimitDecision;
+import com.xerika.auth.common.ratelimit.RateLimiter;
+import com.xerika.auth.common.redis.RedisKeys;
 import com.xerika.auth.signup.dto.SignupRequest;
 import com.xerika.auth.signup.dto.SignupResult;
 import com.xerika.auth.signup.dto.VerifyEmailResult;
@@ -8,8 +11,11 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.Context;
+import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.Map;
 
@@ -21,9 +27,33 @@ public class SignupResource {
     @Inject
     SignupFlow signupFlow;
 
+    @Inject
+    RateLimiter rateLimiter;
+
+    @ConfigProperty(name = "auth.ratelimit.signup.ip.max-attempts", defaultValue = "3")
+    int signupIpMax;
+
+    @ConfigProperty(name = "auth.ratelimit.signup.ip.window-seconds", defaultValue = "3600")
+    long signupIpWindow;
+
+    @ConfigProperty(name = "auth.ratelimit.verify-email.ip.max-attempts", defaultValue = "10")
+    int verifyEmailIpMax;
+
+    @ConfigProperty(name = "auth.ratelimit.verify-email.ip.window-seconds", defaultValue = "60")
+    long verifyEmailIpWindow;
+
     @POST
     @Path("/signup")
-    public Response signup(SignupRequest body) {
+    public Response signup(SignupRequest body, @Context HttpHeaders headers) {
+        String ip = clientIp(headers);
+        if (ip != null && !ip.isBlank()) {
+            RateLimitDecision d = rateLimiter.check(
+                RedisKeys.rlSignupIp(ip), signupIpMax, signupIpWindow);
+            if (!d.allowed()) {
+                return RateLimiter.tooManyRequests(d);
+            }
+        }
+
         SignupResult result = signupFlow.signup(body);
 
         if (!result.ok()) {
@@ -49,7 +79,16 @@ public class SignupResource {
 
     @POST
     @Path("/verify-email")
-    public Response verifyEmail(Map<String, String> body) {
+    public Response verifyEmail(Map<String, String> body, @Context HttpHeaders headers) {
+        String ip = clientIp(headers);
+        if (ip != null && !ip.isBlank()) {
+            RateLimitDecision d = rateLimiter.check(
+                RedisKeys.rlVerifyEmail(ip), verifyEmailIpMax, verifyEmailIpWindow);
+            if (!d.allowed()) {
+                return RateLimiter.tooManyRequests(d);
+            }
+        }
+
         String token = body == null ? null : body.get("token");
         VerifyEmailResult result = signupFlow.verifyEmail(token);
 
@@ -66,5 +105,13 @@ public class SignupResource {
             "message", "email verified",
             "userId", result.userId()
         )).build();
+    }
+
+    private static String clientIp(HttpHeaders headers) {
+        String xff = headers.getHeaderString("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            return xff.split(",")[0].trim();
+        }
+        return null;
     }
 }

@@ -103,8 +103,8 @@ public class DeviceFlow {
         UserSession session = sessionOpt.get();
         if (approve) {
             auth.status = DeviceAuthorization.STATUS_APPROVED;
-            auth.user = session.user;
-            auth.session = session;
+            auth.userId = session.user.id;
+            auth.sessionId = session.id;
         } else {
             auth.status = DeviceAuthorization.STATUS_DENIED;
         }

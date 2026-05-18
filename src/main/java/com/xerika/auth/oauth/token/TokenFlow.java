@@ -118,10 +118,13 @@ public class TokenFlow {
                 return TokenResult.error("invalid_grant", "Unknown device_code state");
         }
 
-        User user = auth.user;
-        UserSession session = auth.session;
-        if (user == null || session == null) {
+        if (auth.userId == null || auth.sessionId == null) {
             return TokenResult.error("invalid_grant", "Approved device_code missing user binding");
+        }
+        User user = userRepository.findById(auth.userId).orElse(null);
+        UserSession session = sessionRepository.findById(auth.sessionId).orElse(null);
+        if (user == null || session == null) {
+            return TokenResult.error("invalid_grant", "User/session not found");
         }
 
         auth.status = DeviceAuthorization.STATUS_CONSUMED;

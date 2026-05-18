@@ -3,7 +3,6 @@ package com.xerika.auth.signup;
 import com.xerika.auth.common.crypto.Argon2Hasher;
 import com.xerika.auth.common.crypto.RandomTokens;
 import com.xerika.auth.common.crypto.Sha256;
-import com.xerika.auth.role.Role;
 import com.xerika.auth.role.RoleRepository;
 import com.xerika.auth.signup.dto.SignupRequest;
 import com.xerika.auth.signup.dto.SignupResult;

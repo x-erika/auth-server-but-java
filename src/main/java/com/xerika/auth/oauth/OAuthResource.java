@@ -1,5 +1,8 @@
 package com.xerika.auth.oauth;
 
+import com.xerika.auth.common.ratelimit.RateLimitDecision;
+import com.xerika.auth.common.ratelimit.RateLimiter;
+import com.xerika.auth.common.redis.RedisKeys;
 import com.xerika.auth.common.web.BearerExtractor;
 import com.xerika.auth.oauth.authorize.AuthorizeFlow;
 import com.xerika.auth.oauth.authorize.AuthorizeResult;
@@ -29,6 +32,7 @@ import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -59,6 +63,15 @@ public class OAuthResource {
 
     @Inject
     Template logout;
+
+    @Inject
+    RateLimiter rateLimiter;
+
+    @ConfigProperty(name = "auth.ratelimit.device-auth.client.max-attempts", defaultValue = "10")
+    int deviceAuthClientMax;
+
+    @ConfigProperty(name = "auth.ratelimit.device-auth.client.window-seconds", defaultValue = "60")
+    long deviceAuthClientWindow;
 
     @GET
     @Path("/authorize")
@@ -250,6 +263,14 @@ public class OAuthResource {
         @FormParam("client_id") String clientId,
         @FormParam("scope") String scope
     ) {
+        if (clientId != null && !clientId.isBlank()) {
+            RateLimitDecision d = rateLimiter.check(
+                RedisKeys.rlDeviceAuth(clientId.trim()),
+                deviceAuthClientMax, deviceAuthClientWindow);
+            if (!d.allowed()) {
+                return RateLimiter.tooManyRequests(d);
+            }
+        }
         DeviceAuthorizationResult result = deviceFlow.requestDeviceAuthorization(clientId, scope);
 
         if (!result.ok()) {

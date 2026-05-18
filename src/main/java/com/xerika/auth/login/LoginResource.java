@@ -1,5 +1,8 @@
 package com.xerika.auth.login;
 
+import com.xerika.auth.common.ratelimit.RateLimitDecision;
+import com.xerika.auth.common.ratelimit.RateLimiter;
+import com.xerika.auth.common.redis.RedisKeys;
 import com.xerika.auth.common.web.BearerExtractor;
 import com.xerika.auth.login.dto.LoginRequest;
 import com.xerika.auth.login.dto.LoginResponse;
@@ -20,6 +23,7 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.List;
 import java.util.Map;
@@ -39,11 +43,45 @@ public class LoginResource {
     @Inject
     RoleRepository roleRepository;
 
+    @Inject
+    RateLimiter rateLimiter;
+
+    @ConfigProperty(name = "auth.ratelimit.login.email.max-attempts", defaultValue = "5")
+    int loginEmailMax;
+
+    @ConfigProperty(name = "auth.ratelimit.login.email.window-seconds", defaultValue = "900")
+    long loginEmailWindow;
+
+    @ConfigProperty(name = "auth.ratelimit.login.ip.max-attempts", defaultValue = "20")
+    int loginIpMax;
+
+    @ConfigProperty(name = "auth.ratelimit.login.ip.window-seconds", defaultValue = "900")
+    long loginIpWindow;
+
     @POST
     @Path("/login")
     public Response login(LoginRequest body, @Context HttpHeaders headers) {
         String email = body == null ? null : body.email();
         String password = body == null ? null : body.password();
+        String xForwardedFor = headers.getHeaderString("X-Forwarded-For");
+        String ipAddress = xForwardedFor == null ? null : xForwardedFor.split(",")[0].trim();
+
+        if (email != null && !email.isBlank()) {
+            RateLimitDecision d = rateLimiter.check(
+                RedisKeys.rlLoginEmail(email.trim().toLowerCase()),
+                loginEmailMax, loginEmailWindow);
+            if (!d.allowed()) {
+                return RateLimiter.tooManyRequests(d);
+            }
+        }
+        if (ipAddress != null && !ipAddress.isBlank()) {
+            RateLimitDecision d = rateLimiter.check(
+                RedisKeys.rlLoginIp(ipAddress),
+                loginIpMax, loginIpWindow);
+            if (!d.allowed()) {
+                return RateLimiter.tooManyRequests(d);
+            }
+        }
 
         Optional<User> userOpt = loginService.authenticateByEmail(email, password);
         if (userOpt.isEmpty()) {
@@ -54,9 +92,6 @@ public class LoginResource {
 
         User user = userOpt.get();
         String userAgent = headers.getHeaderString("User-Agent");
-        String xForwardedFor = headers.getHeaderString("X-Forwarded-For");
-        String ipAddress = xForwardedFor == null ? null : xForwardedFor.split(",")[0].trim();
-
         UserSession session = sessionService.createSession(user, ipAddress, userAgent);
         List<String> roles = List.copyOf(roleRepository.findEffectiveNamesByUserId(user.id));
 
