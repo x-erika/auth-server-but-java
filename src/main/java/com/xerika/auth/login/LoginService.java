@@ -28,11 +28,26 @@ public class LoginService {
     CredentialRepository credentialRepository;
 
     public Optional<User> authenticateByEmail(String email, String rawPassword) {
-        if (email == null || email.isBlank() || rawPassword == null || rawPassword.isBlank()) {
+        return authenticate(email, rawPassword);
+    }
+
+    /**
+     * Authenticate by email or username. The identifier is tried as username
+     * first if it does not contain '@' (avoids hitting the email lookup for
+     * a value that obviously is not an email), then falls back to email.
+     */
+    public Optional<User> authenticate(String identifier, String rawPassword) {
+        if (identifier == null || identifier.isBlank() || rawPassword == null || rawPassword.isBlank()) {
             return Optional.empty();
         }
 
-        User user = userRepository.findByEmail(email).orElse(null);
+        String trimmed = identifier.trim();
+        User user = trimmed.contains("@")
+            ? userRepository.findByEmail(trimmed).orElse(null)
+            : userRepository.findByUsername(trimmed)
+                .or(() -> userRepository.findByEmail(trimmed))
+                .orElse(null);
+
         Credential credential = (user != null)
             ? credentialRepository.findFirstByUserIdAndType(user.id, "password").orElse(null)
             : null;

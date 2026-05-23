@@ -1,12 +1,14 @@
 package com.xerika.auth.login;
 
 import com.xerika.auth.common.crypto.RandomTokens;
+import com.xerika.auth.common.web.ClientIp;
 import com.xerika.auth.session.SessionService;
 import com.xerika.auth.session.UserSession;
 import com.xerika.auth.user.User;
 import io.quarkus.qute.Location;
 import io.quarkus.qute.Template;
 import io.quarkus.qute.TemplateInstance;
+import io.vertx.ext.web.RoutingContext;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import jakarta.ws.rs.Consumes;
@@ -83,7 +85,8 @@ public class LoginPageResource {
         @FormParam("return_to") String returnTo,
         @FormParam("csrf_token") String csrfForm,
         @CookieParam(CSRF_COOKIE) String csrfCookie,
-        @Context HttpHeaders headers
+        @Context HttpHeaders headers,
+        @Context RoutingContext ctx
     ) {
         // Double-submit cookie check. Cookie value (HttpOnly, server-readable) must
         // match the hidden form input rendered by GET /login. A cross-origin POST
@@ -93,7 +96,7 @@ public class LoginPageResource {
             return Response.seeOther(URI.create("/login?error=session_expired")).build();
         }
 
-        Optional<User> userOpt = loginService.authenticateByEmail(email, password);
+        Optional<User> userOpt = loginService.authenticate(email, password);
         if (userOpt.isEmpty()) {
             return Response.ok(
                 loginTemplate
@@ -107,8 +110,7 @@ public class LoginPageResource {
 
         User user = userOpt.get();
         String userAgent = headers.getHeaderString("User-Agent");
-        String xForwardedFor = headers.getHeaderString("X-Forwarded-For");
-        String ipAddress = xForwardedFor == null ? null : xForwardedFor.split(",")[0].trim();
+        String ipAddress = ClientIp.from(ctx);
         UserSession session = sessionService.createSession(user, ipAddress, userAgent);
 
         NewCookie cookie = new NewCookie.Builder(SESSION_COOKIE)

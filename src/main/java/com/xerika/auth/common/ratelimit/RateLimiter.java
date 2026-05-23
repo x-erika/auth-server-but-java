@@ -50,6 +50,24 @@ public class RateLimiter {
         }
     }
 
+    /**
+     * Reset a counter to zero. Used by per-account login rate-limit after a
+     * successful authentication so a legitimate user's session-after-session
+     * activity does not eat the same budget that's there to throttle brute
+     * force. Fail-open on Redis error — the worst case is the counter sticks
+     * around until the existing TTL expires.
+     */
+    public void reset(String key) {
+        if (key == null || key.isEmpty()) {
+            return;
+        }
+        try {
+            redis.execute("DEL", key);
+        } catch (Exception e) {
+            LOG.warnf(e, "Rate limit reset failed for key %s, leaving counter in place", key);
+        }
+    }
+
     public static jakarta.ws.rs.core.Response tooManyRequests(RateLimitDecision decision) {
         return jakarta.ws.rs.core.Response.status(Status.TOO_MANY_REQUESTS)
             .header("Retry-After", String.valueOf(decision.retryAfterSeconds()))

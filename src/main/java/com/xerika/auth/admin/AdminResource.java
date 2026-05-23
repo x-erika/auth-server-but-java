@@ -224,7 +224,7 @@ public class AdminResource {
                 return m;
             })
             .toList();
-        return Response.ok(Map.of("active_kid", rsaKeyProvider.keyId(), "keys", entries)).build();
+        return Response.ok(Map.of("activeKid", rsaKeyProvider.keyId(), "keys", entries)).build();
     }
 
     @POST
@@ -234,8 +234,8 @@ public class AdminResource {
         String newKid = rsaKeyProvider.rotate();
         return Response.ok(Map.of(
             "message", "key rotated",
-            "previous_kid", previousKid,
-            "new_active_kid", newKid
+            "previousKid", previousKid,
+            "newActiveKid", newKid
         )).build();
     }
 
@@ -518,11 +518,12 @@ public class AdminResource {
                 .build();
         }
         String normalizedEmail = body.email().trim().toLowerCase();
+        String normalizedUsername = body.username().trim().toLowerCase();
         if (userRepository.findByEmail(normalizedEmail).isPresent()) {
             return Response.status(Response.Status.CONFLICT)
                 .entity(Map.of("message", "email already registered")).build();
         }
-        if (userRepository.findByUsername(body.username()).isPresent()) {
+        if (userRepository.findByUsername(normalizedUsername).isPresent()) {
             return Response.status(Response.Status.CONFLICT)
                 .entity(Map.of("message", "username already taken")).build();
         }
@@ -530,7 +531,7 @@ public class AdminResource {
         User user = new User();
         user.id = UUID.randomUUID();
         user.email = normalizedEmail;
-        user.username = body.username();
+        user.username = normalizedUsername;
         user.firstName = body.firstName();
         user.lastName = body.lastName();
         user.enabled = body.enabled() == null ? true : body.enabled();

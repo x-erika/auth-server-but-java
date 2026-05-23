@@ -58,16 +58,18 @@ public class SignupFlow {
             return SignupResult.error("invalid_request", "password must be at least 8 characters");
         }
 
-        // Normalise email so `Alice@x.com` and `alice@x.com` resolve to the same
-        // account at signup, login, and uniqueness check. Pairs with the
-        // case-insensitive lookup in UserRepository.findByEmail.
+        // Normalise email + username so `Alice@x.com`/`alice@x.com` and
+        // `Alice`/`alice` resolve to the same account at signup, login, and
+        // uniqueness check. Pairs with the case-insensitive lookups in
+        // UserRepository.findByEmail / findByUsername.
         String normalizedEmail = req.email().trim().toLowerCase();
+        String normalizedUsername = req.username().trim().toLowerCase();
 
         if (userRepository.findByEmail(normalizedEmail).isPresent()) {
             return SignupResult.error("conflict", "email already registered");
         }
 
-        if (userRepository.findByUsername(req.username()).isPresent()) {
+        if (userRepository.findByUsername(normalizedUsername).isPresent()) {
             return SignupResult.error("conflict", "username already taken");
         }
 
@@ -75,7 +77,7 @@ public class SignupFlow {
         user.id = UUID.randomUUID();
         user.email = normalizedEmail;
         user.emailVerified = false;
-        user.username = req.username();
+        user.username = normalizedUsername;
         user.firstName = req.firstName();
         user.lastName = req.lastName();
         user.enabled = true;

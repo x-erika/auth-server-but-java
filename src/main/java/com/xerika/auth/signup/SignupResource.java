@@ -3,16 +3,17 @@ package com.xerika.auth.signup;
 import com.xerika.auth.common.ratelimit.RateLimitDecision;
 import com.xerika.auth.common.ratelimit.RateLimiter;
 import com.xerika.auth.common.redis.RedisKeys;
+import com.xerika.auth.common.web.ClientIp;
 import com.xerika.auth.signup.dto.SignupRequest;
 import com.xerika.auth.signup.dto.SignupResult;
 import com.xerika.auth.signup.dto.VerifyEmailResult;
+import io.vertx.ext.web.RoutingContext;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.Context;
-import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -44,8 +45,8 @@ public class SignupResource {
 
     @POST
     @Path("/signup")
-    public Response signup(SignupRequest body, @Context HttpHeaders headers) {
-        String ip = clientIp(headers);
+    public Response signup(SignupRequest body, @Context RoutingContext ctx) {
+        String ip = ClientIp.from(ctx);
         if (ip != null && !ip.isBlank()) {
             RateLimitDecision d = rateLimiter.check(
                 RedisKeys.rlSignupIp(ip), signupIpMax, signupIpWindow);
@@ -79,11 +80,11 @@ public class SignupResource {
 
     @POST
     @Path("/verify-email")
-    public Response verifyEmail(Map<String, String> body, @Context HttpHeaders headers) {
-        String ip = clientIp(headers);
+    public Response verifyEmail(Map<String, String> body, @Context RoutingContext ctx) {
+        String ip = ClientIp.from(ctx);
         if (ip != null && !ip.isBlank()) {
             RateLimitDecision d = rateLimiter.check(
-                RedisKeys.rlVerifyEmail(ip), verifyEmailIpMax, verifyEmailIpWindow);
+                RedisKeys.rlVerifyEmailIp(ip), verifyEmailIpMax, verifyEmailIpWindow);
             if (!d.allowed()) {
                 return RateLimiter.tooManyRequests(d);
             }
@@ -105,13 +106,5 @@ public class SignupResource {
             "message", "email verified",
             "userId", result.userId()
         )).build();
-    }
-
-    private static String clientIp(HttpHeaders headers) {
-        String xff = headers.getHeaderString("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
-        }
-        return null;
     }
 }

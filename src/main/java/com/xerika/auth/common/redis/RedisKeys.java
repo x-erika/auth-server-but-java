@@ -14,7 +14,7 @@ public final class RedisKeys {
     private static final String RL_LOGIN_EMAIL = "rl:login:email:";
     private static final String RL_LOGIN_IP = "rl:login:ip:";
     private static final String RL_SIGNUP_IP = "rl:signup:ip:";
-    private static final String RL_VERIFY_EMAIL = "rl:verify-email:";
+    private static final String RL_VERIFY_EMAIL_IP = "rl:verify-email:ip:";
     private static final String RL_DEVICE_AUTH = "rl:device-auth:";
 
     public static String authCode(String code) {
@@ -53,8 +53,8 @@ public final class RedisKeys {
         return RL_SIGNUP_IP + ip;
     }
 
-    public static String rlVerifyEmail(String email) {
-        return RL_VERIFY_EMAIL + email;
+    public static String rlVerifyEmailIp(String ip) {
+        return RL_VERIFY_EMAIL_IP + ip;
     }
 
     public static String rlDeviceAuth(String clientId) {

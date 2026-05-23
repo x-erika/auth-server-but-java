@@ -33,8 +33,16 @@ public class UserRepository {
     }
 
     public Optional<User> findByUsername(String username) {
-        return em.createQuery("SELECT u FROM User u WHERE u.username = :username", User.class)
-            .setParameter("username", username)
+        if (username == null) {
+            return Optional.empty();
+        }
+        // Case-insensitive comparison so existing mixed-case rows still resolve
+        // while new writes are normalised to lowercase (signup/admin paths).
+        // Mirrors findByEmail; closes the case where `Alice` and `alice` would
+        // otherwise be treated as distinct accounts at lookup time.
+        String normalized = username.trim().toLowerCase();
+        return em.createQuery("SELECT u FROM User u WHERE LOWER(u.username) = :username", User.class)
+            .setParameter("username", normalized)
             .getResultStream()
             .findFirst();
     }

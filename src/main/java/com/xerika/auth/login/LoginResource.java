@@ -4,6 +4,8 @@ import com.xerika.auth.common.ratelimit.RateLimitDecision;
 import com.xerika.auth.common.ratelimit.RateLimiter;
 import com.xerika.auth.common.redis.RedisKeys;
 import com.xerika.auth.common.web.BearerExtractor;
+import com.xerika.auth.common.web.ClientIp;
+import io.vertx.ext.web.RoutingContext;
 import com.xerika.auth.login.dto.LoginRequest;
 import com.xerika.auth.login.dto.LoginResponse;
 import com.xerika.auth.login.dto.MeResponse;
@@ -22,6 +24,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.NewCookie;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -58,17 +61,19 @@ public class LoginResource {
     @ConfigProperty(name = "auth.ratelimit.login.ip.window-seconds", defaultValue = "900")
     long loginIpWindow;
 
+    @ConfigProperty(name = "auth.cookie.secure", defaultValue = "false")
+    boolean cookieSecure;
+
     @POST
     @Path("/login")
-    public Response login(LoginRequest body, @Context HttpHeaders headers) {
-        String email = body == null ? null : body.email();
+    public Response login(LoginRequest body, @Context HttpHeaders headers, @Context RoutingContext ctx) {
+        String identifier = body == null ? null : body.resolveIdentifier();
         String password = body == null ? null : body.password();
-        String xForwardedFor = headers.getHeaderString("X-Forwarded-For");
-        String ipAddress = xForwardedFor == null ? null : xForwardedFor.split(",")[0].trim();
+        String ipAddress = ClientIp.from(ctx);
 
-        if (email != null && !email.isBlank()) {
+        if (identifier != null && !identifier.isBlank()) {
             RateLimitDecision d = rateLimiter.check(
-                RedisKeys.rlLoginEmail(email.trim().toLowerCase()),
+                RedisKeys.rlLoginEmail(identifier.trim().toLowerCase()),
                 loginEmailMax, loginEmailWindow);
             if (!d.allowed()) {
                 return RateLimiter.tooManyRequests(d);
@@ -83,11 +88,20 @@ public class LoginResource {
             }
         }
 
-        Optional<User> userOpt = loginService.authenticateByEmail(email, password);
+        Optional<User> userOpt = loginService.authenticate(identifier, password);
         if (userOpt.isEmpty()) {
             return Response.status(Response.Status.UNAUTHORIZED)
                 .entity(Map.of("message", "invalid credentials"))
                 .build();
+        }
+
+        // Per-account failure bucket resets on successful auth so a user who
+        // genuinely logs in 5+ times in a window does not lock themselves out.
+        // We keep the per-IP bucket counting up regardless — that one defends
+        // against horizontal abuse (one IP, many target accounts) where a
+        // single victim's success shouldn't refund the attacker's quota.
+        if (identifier != null && !identifier.isBlank()) {
+            rateLimiter.reset(RedisKeys.rlLoginEmail(identifier.trim().toLowerCase()));
         }
 
         User user = userOpt.get();
@@ -95,11 +109,24 @@ public class LoginResource {
         UserSession session = sessionService.createSession(user, ipAddress, userAgent);
         List<String> roles = List.copyOf(roleRepository.findEffectiveNamesByUserId(user.id));
 
+        // Also set the session cookie so the SPA can hand the browser off to
+        // /oauth/authorize as a top-level navigation without having to embed the
+        // token in the URL. SameSite=Lax is enough because /oauth/authorize is
+        // hit via a full-page redirect, not a cross-site subresource.
+        NewCookie cookie = new NewCookie.Builder(BearerExtractor.SESSION_COOKIE)
+            .value(session.sessionToken)
+            .path("/")
+            .httpOnly(true)
+            .secure(cookieSecure)
+            .sameSite(NewCookie.SameSite.LAX)
+            .maxAge(8 * 60 * 60)
+            .build();
+
         return Response.ok(new LoginResponse(
             "login success",
             SessionPayload.from(session),
             UserPayload.from(user, roles)
-        )).build();
+        )).cookie(cookie).build();
     }
 
     @GET
@@ -135,6 +162,15 @@ public class LoginResource {
                 .build();
         }
 
-        return Response.ok(Map.of("message", "logout success")).build();
+        NewCookie clear = new NewCookie.Builder(BearerExtractor.SESSION_COOKIE)
+            .value("")
+            .path("/")
+            .httpOnly(true)
+            .secure(cookieSecure)
+            .sameSite(NewCookie.SameSite.LAX)
+            .maxAge(0)
+            .build();
+
+        return Response.ok(Map.of("message", "logout success")).cookie(clear).build();
     }
 }

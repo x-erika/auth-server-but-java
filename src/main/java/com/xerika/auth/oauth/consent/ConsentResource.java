@@ -79,14 +79,48 @@ public class ConsentResource {
 
         Set<String> scopes = Scopes.parse(pending.scope);
 
+        UserSession session = sessionOpt.get();
+        String userLabel = session.user.email != null && !session.user.email.isBlank()
+            ? session.user.email
+            : session.user.username;
+
+        // Strip everything after host so we don't leak query strings, but still
+        // give the user a recognizable "where you'll be sent" signal.
+        String redirectHost = redirectHost(pending.redirectUri);
+
+        String clientInitial = clientName.isBlank()
+            ? "?"
+            : clientName.substring(0, 1).toUpperCase();
+
         TemplateInstance page = consent
             .data("requestId", pending.requestId)
             .data("clientName", clientName)
             .data("clientId", pending.clientId)
+            .data("clientInitial", clientInitial)
             .data("scopes", List.copyOf(scopes))
+            .data("userLabel", userLabel)
+            .data("redirectHost", redirectHost)
             .data("error", null);
 
         return Response.ok(page).build();
+    }
+
+    private static String redirectHost(String uri) {
+        if (uri == null || uri.isBlank()) return "";
+        try {
+            URI parsed = URI.create(uri);
+            String scheme = parsed.getScheme();
+            String host = parsed.getHost();
+            int port = parsed.getPort();
+            if (host == null) return uri;
+            StringBuilder sb = new StringBuilder();
+            if (scheme != null) sb.append(scheme).append("://");
+            sb.append(host);
+            if (port > 0) sb.append(":").append(port);
+            return sb.toString();
+        } catch (IllegalArgumentException e) {
+            return uri;
+        }
     }
 
     @POST
