@@ -25,7 +25,7 @@ public class JwtValidator {
     String expectedIssuer;
 
     public Optional<JsonNode> validate(String token) {
-        return validate(token, null);
+        return validateInternal(token, null, false);
     }
 
     /**
@@ -35,6 +35,20 @@ public class JwtValidator {
      * meant for itself). Passing {@code null} skips the aud check.
      */
     public Optional<JsonNode> validate(String token, String expectedAudience) {
+        return validateInternal(token, expectedAudience, false);
+    }
+
+    /**
+     * Validates signature + iss + (nbf) but tolerates an expired {@code exp}. Used
+     * by /oauth/logout for the {@code id_token_hint}: OIDC RP-Initiated Logout 1.0
+     * §3 says the OP SHOULD accept the hint regardless of expiry, because users
+     * often log out after their id_token's lifetime has lapsed.
+     */
+    public Optional<JsonNode> validateAllowExpired(String token) {
+        return validateInternal(token, null, true);
+    }
+
+    private Optional<JsonNode> validateInternal(String token, String expectedAudience, boolean allowExpired) {
         if (token == null || token.isBlank()) {
             return Optional.empty();
         }
@@ -55,8 +69,24 @@ public class JwtValidator {
                 return Optional.empty();
             }
 
+            // Strict kid lookup: if the header names a kid that we don't know,
+            // reject outright instead of falling back to the active key. Without
+            // this, a JWT signed by ANY key in our keystore would validate against
+            // the active key's signature attempt and fail there — but the failure
+            // path is the same as a forged token, which makes key-rotation bugs
+            // harder to detect. Missing kid is allowed (legacy tokens / our own
+            // pre-kid issuance) and uses the active key.
             String kid = header.has("kid") ? header.get("kid").asText() : null;
-            PublicKey verifier = keys.publicKeyByKid(kid).orElse(keys.publicKey());
+            PublicKey verifier;
+            if (kid == null || kid.isBlank()) {
+                verifier = keys.publicKey();
+            } else {
+                PublicKey resolved = keys.publicKeyByKid(kid).orElse(null);
+                if (resolved == null) {
+                    return Optional.empty();
+                }
+                verifier = resolved;
+            }
 
             byte[] signatureBytes = Base64.getUrlDecoder().decode(parts[2]);
             Signature signature = Signature.getInstance("SHA256withRSA");
@@ -81,7 +111,7 @@ public class JwtValidator {
             }
 
             long now = Instant.now().getEpochSecond();
-            if (payload.get("exp").asLong() < now) {
+            if (!allowExpired && payload.get("exp").asLong() < now) {
                 return Optional.empty();
             }
             if (payload.has("nbf") && payload.get("nbf").asLong() > now) {

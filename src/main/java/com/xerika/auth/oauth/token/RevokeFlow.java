@@ -2,7 +2,7 @@ package com.xerika.auth.oauth.token;
 
 import com.xerika.auth.client.Client;
 import com.xerika.auth.client.ClientRepository;
-import com.xerika.auth.common.crypto.Sha256;
+import com.xerika.auth.common.crypto.HmacSha256;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -14,6 +14,9 @@ public class RevokeFlow {
 
     @Inject
     RefreshTokenRepository refreshTokenRepository;
+
+    @Inject
+    HmacSha256 hmac;
 
     public RevokeResult revoke(String token, String tokenTypeHint, String clientId, String clientSecret) {
         if (isBlank(token) || isBlank(clientId)) {
@@ -29,11 +32,12 @@ public class RevokeFlow {
             return RevokeResult.error("invalid_client", "Invalid client credentials");
         }
 
-        if (tokenTypeHint != null && !tokenTypeHint.isBlank() && !"refresh_token".equals(tokenTypeHint)) {
-            return RevokeResult.success();
-        }
+        // RFC 7009 §2.1 — token_type_hint is just a hint. We currently only revoke
+        // refresh tokens (access tokens are stateless JWTs that can't be revoked
+        // server-side until expiry). Try the refresh-token table regardless of the
+        // hint value; the hint at most lets future implementations skip a lookup.
 
-        String tokenHash = Sha256.base64Url(token);
+        String tokenHash = hmac.compute(token);
         RefreshToken stored = refreshTokenRepository.findByTokenHash(tokenHash).orElse(null);
         if (stored == null) {
             return RevokeResult.success();

@@ -1,8 +1,8 @@
 package com.xerika.auth.signup;
 
 import com.xerika.auth.common.crypto.Argon2Hasher;
+import com.xerika.auth.common.crypto.HmacSha256;
 import com.xerika.auth.common.crypto.RandomTokens;
-import com.xerika.auth.common.crypto.Sha256;
 import com.xerika.auth.role.RoleRepository;
 import com.xerika.auth.signup.dto.SignupRequest;
 import com.xerika.auth.signup.dto.SignupResult;
@@ -40,6 +40,9 @@ public class SignupFlow {
 
     @Inject
     EmailVerificationRepository emailVerificationRepository;
+
+    @Inject
+    HmacSha256 hmac;
 
     @PersistenceContext
     EntityManager em;
@@ -110,7 +113,7 @@ public class SignupFlow {
         );
 
         String tokenRaw = RandomTokens.urlSafe(VERIFICATION_TOKEN_BYTES);
-        String tokenHash = Sha256.base64Url(tokenRaw);
+        String tokenHash = hmac.compute(tokenRaw);
 
         EmailVerification verification = new EmailVerification();
         verification.id = UUID.randomUUID();
@@ -129,7 +132,7 @@ public class SignupFlow {
             return VerifyEmailResult.error("invalid_request", "token is required");
         }
 
-        String hash = Sha256.base64Url(tokenRaw);
+        String hash = hmac.compute(tokenRaw);
         Optional<EmailVerification> verificationOpt = emailVerificationRepository.findByTokenHash(hash);
         if (verificationOpt.isEmpty()) {
             return VerifyEmailResult.error("invalid_token", "verification token not found");

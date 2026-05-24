@@ -98,10 +98,6 @@ public class DeviceAuthorizationRepository {
         return auth;
     }
 
-    public int deleteExpired() {
-        return 0;
-    }
-
     private Optional<DeviceAuthorization> loadHash(String key) {
         Response r = redis.execute("HGETALL", key);
         if (r == null) {

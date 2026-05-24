@@ -41,6 +41,7 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.jboss.logging.Logger;
 
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,8 @@ import java.util.UUID;
 @Produces(MediaType.APPLICATION_JSON)
 @RequiresRole("admin")
 public class AdminResource {
+
+    private static final Logger LOG = Logger.getLogger(AdminResource.class);
 
     @Inject
     SessionService sessionService;
@@ -227,11 +230,40 @@ public class AdminResource {
         return Response.ok(Map.of("activeKid", rsaKeyProvider.keyId(), "keys", entries)).build();
     }
 
+    @DELETE
+    @Path("/keys/{kid}")
+    public Response retireKey(@PathParam("kid") String kid, @Context HttpHeaders headers) {
+        UserSession actor = sessionService
+            .findActiveSession(BearerExtractor.extract(headers))
+            .orElseThrow();
+        try {
+            boolean removed = rsaKeyProvider.retire(kid);
+            if (!removed) {
+                return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("message", "kid not found")).build();
+            }
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", e.getMessage())).build();
+        }
+        LOG.infof("RSA signing key kid=%s retired by admin user=%s id=%s",
+            kid, actor.user.username, actor.user.id);
+        return Response.noContent().build();
+    }
+
     @POST
     @Path("/keys/rotate")
-    public Response rotateKey() {
+    public Response rotateKey(@Context HttpHeaders headers) {
+        UserSession actor = sessionService
+            .findActiveSession(BearerExtractor.extract(headers))
+            .orElseThrow();
         String previousKid = rsaKeyProvider.keyId();
         String newKid = rsaKeyProvider.rotate();
+        // High-impact action: log who triggered it so post-incident forensics
+        // can answer "who rotated the signing key on date X?". RoleFilter already
+        // guarantees actor != null and has admin role.
+        LOG.infof("RSA signing key rotated by admin user=%s id=%s — %s -> %s",
+            actor.user.username, actor.user.id, previousKid, newKid);
         return Response.ok(Map.of(
             "message", "key rotated",
             "previousKid", previousKid,
@@ -375,6 +407,28 @@ public class AdminResource {
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(Map.of("message", "uri is required")).build();
         }
+        // Reject schemes that turn a redirect into script execution / file access.
+        // Only http(s) and a few well-known native-app schemes are allowed. The
+        // exact-match check at /authorize already prevents *unregistered* URIs
+        // from being used, but a malicious or sloppy admin could otherwise pin
+        // `javascript:alert(1)` here and turn the authorize response into XSS.
+        String trimmed = uri.trim();
+        String lower = trimmed.toLowerCase();
+        boolean allowedScheme =
+            lower.startsWith("http://")
+                || lower.startsWith("https://")
+                || lower.matches("^[a-z][a-z0-9+.-]*://.*");  // custom mobile/native schemes
+        boolean blockedScheme =
+            lower.startsWith("javascript:")
+                || lower.startsWith("data:")
+                || lower.startsWith("file:")
+                || lower.startsWith("vbscript:");
+        if (!allowedScheme || blockedScheme) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("message", "redirect_uri must use http(s) or a registered native scheme"))
+                .build();
+        }
+
         Client client = clientRepository.findById(id).orElse(null);
         if (client == null) {
             return Response.status(Response.Status.NOT_FOUND)
@@ -384,7 +438,7 @@ public class AdminResource {
         RedirectUri redirectUri = new RedirectUri();
         redirectUri.id = UUID.randomUUID();
         redirectUri.client = client;
-        redirectUri.uri = uri;
+        redirectUri.uri = trimmed;
         redirectUri.createdAt = java.time.LocalDateTime.now();
         clientRepository.addRedirectUri(redirectUri);
 

@@ -130,6 +130,34 @@ public class RsaKeyProvider {
         }
     }
 
+    /**
+     * Permanently retire a non-active key. The kid is removed from the in-memory
+     * set, the JWKS endpoint stops advertising it, and the PEM files are deleted.
+     * Any JWT still signed by the retired key fails validation immediately.
+     * Active key cannot be retired (rotate first).
+     */
+    public synchronized boolean retire(String kid) {
+        if (kid == null || kid.isBlank()) {
+            return false;
+        }
+        if (kid.equals(activeKid)) {
+            throw new IllegalArgumentException("Cannot retire the active key — rotate first");
+        }
+        if (!keysByKid.containsKey(kid)) {
+            return false;
+        }
+        keysByKid.remove(kid);
+        try {
+            Path dir = resolveKeysDir();
+            Files.deleteIfExists(dir.resolve(kid + ".private.pem"));
+            Files.deleteIfExists(dir.resolve(kid + ".public.pem"));
+            LOG.infof("Retired signing key kid=%s", kid);
+            return true;
+        } catch (Exception e) {
+            throw new IllegalStateException("Key retire failed for kid=" + kid, e);
+        }
+    }
+
     private void loadExistingKeys(Path dir) throws IOException, GeneralSecurityException {
         if (!Files.exists(dir)) {
             return;

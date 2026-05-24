@@ -7,6 +7,7 @@ import com.xerika.auth.oauth.ScopeFilter;
 import com.xerika.auth.oauth.Scopes;
 import com.xerika.auth.oidc.dto.Jwks;
 import com.xerika.auth.oidc.dto.JwksKey;
+import com.xerika.auth.session.SessionRepository;
 import com.xerika.auth.user.User;
 import com.xerika.auth.user.UserRepository;
 import jakarta.inject.Inject;
@@ -39,6 +40,9 @@ public class OidcResource {
     UserRepository userRepository;
 
     @Inject
+    SessionRepository sessionRepository;
+
+    @Inject
     RsaKeyProvider keys;
 
     @ConfigProperty(name = "auth.issuer.url", defaultValue = "http://localhost:8080")
@@ -66,6 +70,23 @@ public class OidcResource {
 
         if (userOpt.isEmpty() || !userOpt.get().enabled) {
             return invalidToken();
+        }
+
+        // Bind the access token back to its originating session. The token JWT
+        // carries `sid` (TokenIssuer.buildAccessTokenClaims), so an admin who
+        // revokes the user_session row should immediately invalidate every
+        // access_token issued under it — closing the "JWT is stateless so I
+        // can't revoke it" gap for the userinfo path. client_credentials tokens
+        // have no sid and pass through (no session to validate against).
+        if (claims.has("sid") && !claims.get("sid").isNull()) {
+            try {
+                UUID sid = UUID.fromString(claims.get("sid").asText());
+                if (sessionRepository.findById(sid).isEmpty()) {
+                    return invalidToken();
+                }
+            } catch (IllegalArgumentException e) {
+                return invalidToken();
+            }
         }
 
         User user = userOpt.get();
@@ -118,11 +139,10 @@ public class OidcResource {
         doc.put("frontchannel_logout_session_supported", true);
         doc.put("backchannel_logout_supported", true);
         doc.put("backchannel_logout_session_supported", true);
-        doc.put("request_parameter_supported", true);
+        doc.put("request_parameter_supported", false);
         doc.put("request_uri_parameter_supported", false);
         doc.put("require_request_uri_registration", false);
         doc.put("claims_parameter_supported", true);
-        doc.put("request_object_signing_alg_values_supported", List.of("HS256"));
         doc.put("device_authorization_endpoint", issuerUrl + "/oauth/device-authorization");
         doc.put("jwks_uri", issuerUrl + "/.well-known/jwks.json");
         doc.put("response_types_supported", List.of("code"));

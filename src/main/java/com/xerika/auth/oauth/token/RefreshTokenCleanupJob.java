@@ -29,17 +29,24 @@ public class RefreshTokenCleanupJob {
 
     // Runs hourly; SKIP overlap so a slow query on a large table can't pile up
     // concurrent deletes. Identity = "refresh-cleanup" so the metric is visible.
+    //
+    // IMPORTANT: only delete rows whose natural expires_at has passed. We do NOT
+    // drop merely-revoked rows, because the reuse-detection path in TokenFlow
+    // (OAuth 2.0 Security BCP §4.13) needs to find the revoked row when a stolen
+    // refresh token is replayed — if we'd purged it, the replay would return a
+    // generic invalid_grant and the legitimate token family would survive.
+    // Letting revoked rows age out alongside non-revoked ones keeps the
+    // detection window equal to the token TTL.
     @Scheduled(every = "1h", concurrentExecution = ConcurrentExecution.SKIP, identity = "refresh-cleanup")
     @Transactional
     public void cleanup() {
         int deleted = em.createQuery(
-                "DELETE FROM RefreshToken r WHERE r.revoked = true "
-                    + "OR (r.expiresAt IS NOT NULL AND r.expiresAt < :now)"
+                "DELETE FROM RefreshToken r WHERE r.expiresAt IS NOT NULL AND r.expiresAt < :now"
             )
             .setParameter("now", LocalDateTime.now())
             .executeUpdate();
         if (deleted > 0) {
-            LOG.infof("Refresh token sweep: removed %d expired/revoked rows", deleted);
+            LOG.infof("Refresh token sweep: removed %d expired rows", deleted);
         }
     }
 }

@@ -1,6 +1,5 @@
 package com.xerika.auth.oauth.authorize;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.xerika.auth.client.Client;
 import com.xerika.auth.client.ClientRepository;
 import com.xerika.auth.common.crypto.RandomTokens;
@@ -33,7 +32,9 @@ public class AuthorizeFlow {
     private static final int CONSENT_REQUEST_TTL_MINUTES = 10;
     // After a re-auth via /login, the OP treats prompt=login as already-satisfied for
     // this long. Picks up the redirect back to /oauth/authorize without re-prompting.
-    private static final int REAUTH_GRACE_SECONDS = 30;
+    // Kept short (~10s) so a phishing flow that tricks a user into a fresh login
+    // can't piggyback on the grace window beyond the natural redirect round-trip.
+    private static final int REAUTH_GRACE_SECONDS = 10;
 
     @Inject
     ClientRepository clientRepository;
@@ -53,9 +54,6 @@ public class AuthorizeFlow {
     @Inject
     PendingAuthorizationStore pendingAuthorizationStore;
 
-    @Inject
-    RequestObjectParser requestObjectParser;
-
     public AuthorizeResult authorize(
         String sessionToken,
         String clientId,
@@ -68,7 +66,6 @@ public class AuthorizeFlow {
         Long maxAge,
         String codeChallenge,
         String codeChallengeMethod,
-        String requestJwt,
         String claimsJson
     ) {
         if (!"code".equals(responseType)) {
@@ -113,21 +110,12 @@ public class AuthorizeFlow {
             return AuthorizeResult.error("unauthorized_client", "Unknown or disabled client");
         }
 
-        if (requestJwt != null && !requestJwt.isBlank()) {
-            JsonNode requestPayload = requestObjectParser.parse(requestJwt, client).orElse(null);
-            if (requestPayload == null) {
-                return AuthorizeResult.error("invalid_request_object", "Could not validate request JWT");
-            }
-            redirectUri = overrideString(redirectUri, requestPayload, "redirect_uri");
-            scope = overrideString(scope, requestPayload, "scope");
-            state = overrideString(state, requestPayload, "state");
-            nonce = overrideString(nonce, requestPayload, "nonce");
-            codeChallenge = overrideString(codeChallenge, requestPayload, "code_challenge");
-            codeChallengeMethod = overrideString(codeChallengeMethod, requestPayload, "code_challenge_method");
-            if (requestPayload.has("claims") && !requestPayload.get("claims").isNull()) {
-                claimsJson = requestPayload.get("claims").toString();
-            }
-        }
+        // JAR (Request Object, RFC 9101) support removed: the previous HS256
+        // implementation required client.clientSecret as the HMAC key, which is
+        // now Argon2-hashed at rest — verification could never succeed for
+        // anything but legacy plaintext rows. A correct JAR implementation
+        // needs either a separate raw-secret column or RS256 against the
+        // client's registered JWKS; we ship neither.
 
         if (!clientRepository.isRedirectUriAllowed(client.id, redirectUri)) {
             return AuthorizeResult.error("invalid_request", "redirect_uri is not registered");
@@ -221,7 +209,7 @@ public class AuthorizeFlow {
         String codeChallengeMethod,
         String claimsRequested
     ) {
-        authCodeStore.cleanupExpired();
+        // Expired authorization codes are reaped by Redis TTL automatically.
 
         String code = RandomTokens.urlSafe(AUTH_CODE_BYTES);
         LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(AUTH_CODE_TTL_MINUTES);
@@ -281,16 +269,6 @@ public class AuthorizeFlow {
 
     private String urlEncode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
-    }
-
-    private String overrideString(String original, JsonNode payload, String field) {
-        if (payload.has(field) && !payload.get(field).isNull()) {
-            String value = payload.get(field).asText();
-            if (!value.isBlank()) {
-                return value;
-            }
-        }
-        return original;
     }
 
     private Set<String> parsePrompt(String raw) {

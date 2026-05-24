@@ -100,6 +100,14 @@ public class SessionRepository {
             return;
         }
         invalidateNowOrThrow(managed.sessionToken);
+        // Mark refresh tokens revoked first so reuse detection has a chance to
+        // notice replays before the FK cascade purges the rows.
+        em.createQuery(
+                "UPDATE RefreshToken r SET r.revoked = true "
+                    + "WHERE r.session.id = :sid AND r.revoked = false"
+            )
+            .setParameter("sid", managed.id)
+            .executeUpdate();
         em.remove(managed);
     }
 
@@ -130,6 +138,12 @@ public class SessionRepository {
             return 0;
         }
         invalidateNowOrThrow(existing.sessionToken);
+        em.createQuery(
+                "UPDATE RefreshToken r SET r.revoked = true "
+                    + "WHERE r.session.id = :sid AND r.revoked = false"
+            )
+            .setParameter("sid", id)
+            .executeUpdate();
         em.remove(existing);
         return 1;
     }
@@ -151,6 +165,45 @@ public class SessionRepository {
                     userId);
             }
         }
+    }
+
+    @Transactional
+    public int deleteAllByUserIdExcept(UUID userId, UUID keepSessionId) {
+        List<UserSession> rows = em.createQuery(
+                "SELECT s FROM UserSession s WHERE s.user.id = :userId AND s.id <> :keepId",
+                UserSession.class)
+            .setParameter("userId", userId)
+            .setParameter("keepId", keepSessionId)
+            .getResultList();
+        List<String> failedTokens = new ArrayList<>();
+        for (UserSession s : rows) {
+            if (s.sessionToken == null) {
+                continue;
+            }
+            try {
+                redis.execute("DEL", RedisKeys.session(Sha256.base64Url(s.sessionToken)));
+            } catch (Exception e) {
+                failedTokens.add(s.sessionToken);
+            }
+        }
+        if (!failedTokens.isEmpty()) {
+            LOG.errorf("Failed to DEL %d session keys from Redis during deleteAllByUserIdExcept(%s) — aborting Postgres delete",
+                failedTokens.size(), userId);
+            throw new RuntimeException("Selective session invalidation: Redis unavailable");
+        }
+        // Mirror deleteAllByUserId: revoke refresh tokens explicitly so reuse
+        // detection can see the revoked rows before they're swept.
+        em.createQuery(
+                "UPDATE RefreshToken r SET r.revoked = true "
+                    + "WHERE r.user.id = :userId AND r.session.id <> :keepId AND r.revoked = false"
+            )
+            .setParameter("userId", userId)
+            .setParameter("keepId", keepSessionId)
+            .executeUpdate();
+        return em.createQuery("DELETE FROM UserSession s WHERE s.user.id = :userId AND s.id <> :keepId")
+            .setParameter("userId", userId)
+            .setParameter("keepId", keepSessionId)
+            .executeUpdate();
     }
 
     @Transactional
@@ -176,6 +229,19 @@ public class SessionRepository {
                 failedTokens.size(), userId);
             throw new RuntimeException("Bulk session invalidation: Redis unavailable");
         }
+        // Mark refresh tokens revoked BEFORE the session DELETE. Even though the
+        // refresh_tokens.session_id FK is ON DELETE CASCADE (so PG would drop them
+        // anyway), an explicit UPDATE keeps the rows around long enough for the
+        // reuse-detection sweep in TokenFlow to see them as `revoked=true` if a
+        // stolen copy is replayed before the row is naturally expired. Without
+        // this, the cascade would silently delete the row and replay would just
+        // return invalid_grant — losing the family-revocation signal.
+        em.createQuery(
+                "UPDATE RefreshToken r SET r.revoked = true "
+                    + "WHERE r.user.id = :userId AND r.revoked = false"
+            )
+            .setParameter("userId", userId)
+            .executeUpdate();
         return em.createQuery("DELETE FROM UserSession s WHERE s.user.id = :userId")
             .setParameter("userId", userId)
             .executeUpdate();

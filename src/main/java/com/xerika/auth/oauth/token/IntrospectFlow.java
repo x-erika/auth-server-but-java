@@ -43,11 +43,39 @@ public class IntrospectFlow {
             return IntrospectResult.success(Map.of("active", false));
         }
 
+        // Bind introspection to the calling client. RFC 7662 lets each resource
+        // server introspect "its own" tokens; without this check, Client A could
+        // POST Client B's access_token and read every claim — email, roles, sid.
+        // We return the spec-correct "active: false" instead of an error so a
+        // malicious caller can't distinguish "token doesn't belong to you" from
+        // "token doesn't exist".
+        JsonNode aud = claimsOpt.get().get("aud");
+        if (!audienceMatches(aud, client.clientId)) {
+            return IntrospectResult.success(Map.of("active", false));
+        }
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("active", true);
         Map<String, Object> claims = MAPPER.convertValue(claimsOpt.get(), new TypeReference<Map<String, Object>>() {});
         payload.putAll(claims);
         return IntrospectResult.success(payload);
+    }
+
+    private static boolean audienceMatches(JsonNode aud, String expected) {
+        if (aud == null || aud.isNull()) {
+            return false;
+        }
+        if (aud.isTextual()) {
+            return expected.equals(aud.asText());
+        }
+        if (aud.isArray()) {
+            for (JsonNode v : aud) {
+                if (v.isTextual() && expected.equals(v.asText())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean authenticateClient(Client client, String clientSecret) {

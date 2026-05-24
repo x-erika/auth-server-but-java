@@ -1,9 +1,9 @@
 package com.xerika.auth.oauth.token;
 
 import com.xerika.auth.client.Client;
+import com.xerika.auth.common.crypto.HmacSha256;
 import com.xerika.auth.common.crypto.JwtSigner;
 import com.xerika.auth.common.crypto.RandomTokens;
-import com.xerika.auth.common.crypto.Sha256;
 import com.xerika.auth.oauth.Scopes;
 import com.xerika.auth.oauth.authorize.ClaimsRequest;
 import com.xerika.auth.role.RoleRepository;
@@ -30,6 +30,9 @@ public class TokenIssuer {
 
     @Inject
     JwtSigner jwtSigner;
+
+    @Inject
+    HmacSha256 hmac;
 
     @Inject
     RoleRepository roleRepository;
@@ -72,7 +75,7 @@ public class TokenIssuer {
         );
 
         String refreshTokenRaw = RandomTokens.urlSafe(48);
-        String refreshTokenHash = Sha256.base64Url(refreshTokenRaw);
+        String refreshTokenHash = hmac.compute(refreshTokenRaw);
 
         RefreshToken refreshToken = new RefreshToken();
         refreshToken.id = UUID.randomUUID();

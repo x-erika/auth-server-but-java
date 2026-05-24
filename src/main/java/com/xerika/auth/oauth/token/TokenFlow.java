@@ -2,7 +2,7 @@ package com.xerika.auth.oauth.token;
 
 import com.xerika.auth.client.Client;
 import com.xerika.auth.client.ClientRepository;
-import com.xerika.auth.common.crypto.Sha256;
+import com.xerika.auth.common.crypto.HmacSha256;
 import com.xerika.auth.oauth.Scopes;
 import com.xerika.auth.oauth.authorize.AuthCodeStore;
 import com.xerika.auth.oauth.authorize.AuthorizationCode;
@@ -42,6 +42,9 @@ public class TokenFlow {
 
     @Inject
     TokenIssuer tokenIssuer;
+
+    @Inject
+    HmacSha256 hmac;
 
     @Inject
     DeviceAuthorizationRepository deviceRepository;
@@ -236,7 +239,7 @@ public class TokenFlow {
             return TokenResult.error("invalid_client", "Invalid client credentials");
         }
 
-        String refreshTokenHash = Sha256.base64Url(refreshTokenRaw);
+        String refreshTokenHash = hmac.compute(refreshTokenRaw);
         // Row-lock for the read-check-revoke window. Without this, two parallel
         // refreshes with the same raw token could both observe revoked=false and
         // both succeed (token-family fork).

@@ -86,7 +86,6 @@ public class OAuthResource {
         @QueryParam("max_age") Long maxAge,
         @QueryParam("code_challenge") String codeChallenge,
         @QueryParam("code_challenge_method") String codeChallengeMethod,
-        @QueryParam("request") String requestJwt,
         @QueryParam("claims") String claimsJson,
         @Context HttpHeaders headers,
         @Context UriInfo uriInfo
@@ -105,7 +104,6 @@ public class OAuthResource {
             maxAge,
             codeChallenge,
             codeChallengeMethod,
-            requestJwt,
             claimsJson
         );
 

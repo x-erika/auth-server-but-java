@@ -1,5 +1,6 @@
 package com.xerika.auth.oauth.authorize;
 
+import com.xerika.auth.common.crypto.Sha256;
 import com.xerika.auth.common.redis.RedisJson;
 import com.xerika.auth.common.redis.RedisKeys;
 import com.xerika.auth.common.redis.RedisLua;
@@ -33,7 +34,11 @@ public class AuthCodeStore {
             return;
         }
         code.createdAt = LocalDateTime.now();
-        String key = RedisKeys.authCode(code.code);
+        // Hash the raw code before using it as a Redis key. A Redis dump or
+        // KEYS-style scan would otherwise expose live authorization codes
+        // verbatim; storing the hash means an attacker who reads the keystore
+        // still needs the raw code (delivered only via redirect) to redeem.
+        String key = RedisKeys.authCode(Sha256.base64Url(code.code));
         String payload = json.stringify(code);
         redis.execute("SET", key, payload, "NX", "EX", Long.toString(ttlSeconds));
     }
@@ -42,7 +47,7 @@ public class AuthCodeStore {
         if (code == null || code.isEmpty()) {
             return null;
         }
-        String key = RedisKeys.authCode(code);
+        String key = RedisKeys.authCode(Sha256.base64Url(code));
         Response r = lua.eval(RedisLua.GET_AND_DEL, List.of(key), List.of());
         if (r == null) {
             return null;
@@ -59,9 +64,5 @@ public class AuthCodeStore {
             return null;
         }
         return existing;
-    }
-
-    public void cleanupExpired() {
-        // No-op: Redis TTL expires keys automatically.
     }
 }

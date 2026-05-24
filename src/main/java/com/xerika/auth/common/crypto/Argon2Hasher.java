@@ -20,8 +20,12 @@ public final class Argon2Hasher {
     }
 
     public static Map<String, String> hash(String rawPassword) {
-        int iterations = 5;
-        int memoryKb = 7168;
+        // OWASP 2024 Argon2id baseline (12 MiB memory, 3 iterations, p=1).
+        // Old credentials remain verifiable because verify() reads each row's
+        // own stored params from credentialData JSON, so existing hashes don't
+        // break — only new writes use the stronger settings.
+        int iterations = 3;
+        int memoryKb = 12288;
         int parallelism = 1;
         int hashLength = 32;
         int type = Argon2Parameters.ARGON2_id;
@@ -38,13 +42,13 @@ public final class Argon2Hasher {
             "}";
 
         String credentialData = "{" +
-            "\"hashIterations\":5," +
+            "\"hashIterations\":" + iterations + "," +
             "\"algorithm\":\"argon2\"," +
             "\"additionalParameters\":{" +
-            "\"hashLength\":[\"32\"]," +
-            "\"memory\":[\"7168\"]," +
+            "\"hashLength\":[\"" + hashLength + "\"]," +
+            "\"memory\":[\"" + memoryKb + "\"]," +
             "\"type\":[\"id\"]," +
-            "\"parallelism\":[\"1\"]" +
+            "\"parallelism\":[\"" + parallelism + "\"]" +
             "}" +
             "}";
 

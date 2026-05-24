@@ -1,6 +1,7 @@
 package com.xerika.auth.oauth;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xerika.auth.common.crypto.JwtValidator;
 import com.xerika.auth.common.web.BearerExtractor;
 import jakarta.inject.Inject;
@@ -12,6 +13,7 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.Provider;
 
 import java.lang.reflect.Method;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -21,6 +23,8 @@ import java.util.Set;
 public class ScopeFilter implements ContainerRequestFilter {
 
     public static final String CLAIMS_PROPERTY = "jwt.claims";
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Context
     ResourceInfo resourceInfo;
@@ -50,9 +54,13 @@ public class ScopeFilter implements ContainerRequestFilter {
 
         String token = BearerExtractor.extract(ctx);
         Optional<JsonNode> claimsOpt = jwtValidator.validate(token);
-        if (claimsOpt.isEmpty()) {
+        if (claimsOpt.isEmpty() || !isAccessTokenType(token)) {
             // RFC 6750 §3: 401 from a Bearer-protected resource MUST carry a
             // WWW-Authenticate challenge so RFC-strict clients refresh.
+            // The isAccessTokenType gate is RFC 9068 §4: protected resources
+            // SHOULD reject anything that is not typ=at+jwt, so an id_token
+            // (which has matching iss/aud/exp) can't be presented as an access
+            // token via the same Bearer header.
             ctx.abortWith(Response.status(Response.Status.UNAUTHORIZED)
                 .header("WWW-Authenticate", "Bearer error=\"invalid_token\"")
                 .entity(Map.of("error", "invalid_token"))
@@ -88,5 +96,23 @@ public class ScopeFilter implements ContainerRequestFilter {
         }
 
         ctx.setProperty(CLAIMS_PROPERTY, claims);
+    }
+
+    private static boolean isAccessTokenType(String token) {
+        if (token == null) {
+            return false;
+        }
+        int firstDot = token.indexOf('.');
+        if (firstDot <= 0) {
+            return false;
+        }
+        try {
+            byte[] headerBytes = Base64.getUrlDecoder().decode(token.substring(0, firstDot));
+            JsonNode header = MAPPER.readTree(headerBytes);
+            String typ = header.has("typ") ? header.get("typ").asText() : null;
+            return "at+jwt".equalsIgnoreCase(typ);
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

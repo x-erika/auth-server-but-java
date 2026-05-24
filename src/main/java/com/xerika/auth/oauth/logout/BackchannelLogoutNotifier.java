@@ -46,6 +46,17 @@ public class BackchannelLogoutNotifier {
 
     private void sendLogoutToken(Client client, UUID userId, UUID sessionId) {
         try {
+            URI target = URI.create(client.backchannelLogoutUri);
+            // Scheme allowlist: backchannel POST is admin-configured, but a
+            // misconfigured / compromised admin could otherwise point this at
+            // file://, jar://, gopher:// etc. for SSRF probing. Only HTTP(S).
+            String scheme = target.getScheme();
+            if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                LOG.warnf("Backchannel logout for client %s skipped — scheme %s not allowed",
+                    client.clientId, scheme);
+                return;
+            }
+
             String logoutToken = jwtSigner.signLogoutToken(
                 userId == null ? null : userId.toString(),
                 client.clientId,
@@ -55,7 +66,7 @@ public class BackchannelLogoutNotifier {
             String body = "logout_token=" + URLEncoder.encode(logoutToken, StandardCharsets.UTF_8);
 
             HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(client.backchannelLogoutUri))
+                .uri(target)
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .timeout(Duration.ofSeconds(10))
                 .POST(HttpRequest.BodyPublishers.ofString(body))

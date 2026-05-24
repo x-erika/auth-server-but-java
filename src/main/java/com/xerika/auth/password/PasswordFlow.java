@@ -1,8 +1,8 @@
 package com.xerika.auth.password;
 
 import com.xerika.auth.common.crypto.Argon2Hasher;
+import com.xerika.auth.common.crypto.HmacSha256;
 import com.xerika.auth.common.crypto.RandomTokens;
-import com.xerika.auth.common.crypto.Sha256;
 import com.xerika.auth.session.SessionRepository;
 import com.xerika.auth.user.Credential;
 import com.xerika.auth.user.CredentialRepository;
@@ -36,6 +36,9 @@ public class PasswordFlow {
     @Inject
     SessionRepository sessionRepository;
 
+    @Inject
+    HmacSha256 hmac;
+
     /**
      * Issue a password reset token. Identifier can be email or username. To
      * prevent account enumeration via response shape/timing, the caller always
@@ -57,7 +60,7 @@ public class PasswordFlow {
         }
 
         String tokenRaw = RandomTokens.urlSafe(RESET_TOKEN_BYTES);
-        String tokenHash = Sha256.base64Url(tokenRaw);
+        String tokenHash = hmac.compute(tokenRaw);
 
         PasswordReset reset = new PasswordReset();
         reset.id = UUID.randomUUID();
@@ -81,7 +84,7 @@ public class PasswordFlow {
             return Optional.of(ResetError.INVALID_TOKEN);
         }
 
-        String hash = Sha256.base64Url(tokenRaw);
+        String hash = hmac.compute(tokenRaw);
         PasswordReset reset = passwordResetRepository.findByTokenHash(hash).orElse(null);
         if (reset == null || reset.consumedAt != null
             || reset.expiresAt.isBefore(LocalDateTime.now())) {
@@ -91,9 +94,14 @@ public class PasswordFlow {
         rotatePassword(reset.user, newPassword);
         reset.consumedAt = LocalDateTime.now();
 
+        // Invalidate every other unused reset token for this user so a thief who
+        // raced to request a parallel reset can't use their copy after we accepted
+        // the legitimate one.
+        passwordResetRepository.consumeSiblingTokens(reset.user.id, reset.id);
+
         // Forces every other tab/device of this user to log in again with the
         // new password — defence against a thief who set up a reset and a
-        // session in parallel.
+        // session in parallel. FK CASCADE drops refresh_tokens with the sessions.
         sessionRepository.deleteAllByUserId(reset.user.id);
 
         return Optional.empty();
@@ -102,7 +110,7 @@ public class PasswordFlow {
     public enum ChangeError { WRONG_PASSWORD, WEAK_PASSWORD }
 
     @Transactional
-    public Optional<ChangeError> changePassword(UUID userId, String oldPassword, String newPassword) {
+    public Optional<ChangeError> changePassword(UUID userId, UUID currentSessionId, String oldPassword, String newPassword) {
         if (newPassword == null || newPassword.length() < MIN_PASSWORD_LEN) {
             return Optional.of(ChangeError.WEAK_PASSWORD);
         }
@@ -126,6 +134,17 @@ public class PasswordFlow {
         }
 
         rotatePassword(user, newPassword);
+
+        // Kick every session except the one this request is using. A user who
+        // changed their password typically wants other devices/tabs logged out
+        // (especially if the trigger was "I think someone else has my account").
+        // The current session keeps working so the user isn't dumped to /login
+        // immediately after submitting the form.
+        if (currentSessionId != null) {
+            sessionRepository.deleteAllByUserIdExcept(userId, currentSessionId);
+        } else {
+            sessionRepository.deleteAllByUserId(userId);
+        }
         return Optional.empty();
     }
 

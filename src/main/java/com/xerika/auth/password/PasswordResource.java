@@ -86,8 +86,8 @@ public class PasswordResource {
             ? null
             : firstNonBlank(body.get("newPassword"), body.get("new_password"));
 
-        Optional<PasswordFlow.ChangeError> err =
-            passwordFlow.changePassword(sessionOpt.get().user.id, oldPassword, newPassword);
+        Optional<PasswordFlow.ChangeError> err = passwordFlow.changePassword(
+            sessionOpt.get().user.id, sessionOpt.get().id, oldPassword, newPassword);
         if (err.isPresent()) {
             String code = switch (err.get()) {
                 case WRONG_PASSWORD -> "wrong_password";

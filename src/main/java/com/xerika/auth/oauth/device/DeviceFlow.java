@@ -52,7 +52,7 @@ public class DeviceFlow {
             return DeviceAuthorizationResult.error("invalid_scope", "Requested scope is not allowed for this client");
         }
 
-        deviceRepository.deleteExpired();
+        // Expired device authorizations are reaped by Redis TTL automatically.
 
         DeviceAuthorization auth = new DeviceAuthorization();
         auth.id = UUID.randomUUID();

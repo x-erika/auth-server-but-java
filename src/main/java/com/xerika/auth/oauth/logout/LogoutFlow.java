@@ -101,7 +101,8 @@ public class LogoutFlow {
         if (idTokenHint == null || idTokenHint.isBlank()) {
             return null;
         }
-        Optional<JsonNode> claims = jwtValidator.validate(idTokenHint);
+        // OIDC RP-Initiated Logout 1.0 §3: accept the hint even when expired.
+        Optional<JsonNode> claims = jwtValidator.validateAllowExpired(idTokenHint);
         if (claims.isEmpty()) {
             return null;
         }
@@ -127,7 +128,8 @@ public class LogoutFlow {
 
     private UUID resolveSessionId(String idTokenHint, String sessionToken) {
         if (idTokenHint != null && !idTokenHint.isBlank()) {
-            Optional<JsonNode> claims = jwtValidator.validate(idTokenHint);
+            // Expired id_tokens are still valid hints — see resolveClientFromIdTokenHint.
+            Optional<JsonNode> claims = jwtValidator.validateAllowExpired(idTokenHint);
             if (claims.isPresent() && claims.get().has("sid")) {
                 try {
                     return UUID.fromString(claims.get().get("sid").asText());
