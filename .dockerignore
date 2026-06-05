@@ -1,5 +1,20 @@
-*
-!target/*-runner
-!target/*-runner.jar
-!target/lib/*
-!target/quarkus-app/*
+# Replaces the prior dockerignore that whitelisted only target/quarkus-app
+# (which assumed a host-side `./mvnw package`). The root Dockerfile now does
+# the maven build inside the builder stage, so we exclude everything that
+# only slows the build context — target/ included.
+
+target/
+.git/
+.github/
+.gitignore
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+.env
+.env.local
+
+# Existing dockerfiles under src/main/docker are the Quarkus-generated
+# variants (.jvm, .native, .legacy-jar, .native-micro). They aren't used by
+# the root Dockerfile, but they're cheap to keep in the context — leave them.
