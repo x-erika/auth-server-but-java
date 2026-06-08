@@ -10,11 +10,33 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 
 public final class Argon2Hasher {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
+
+    // Caps concurrent Argon2 hashes. Argon2 is CPU-bound (~25ms) and each call
+    // allocates `memoryKb` (12 MiB); Quarkus's worker pool would otherwise run
+    // hundreds in parallel, exploding RSS without adding throughput (the work
+    // is CPU-bound). Bound at the core count so memory stays predictable and
+    // throughput sits at the CPU ceiling. Override: AUTH_ARGON2_MAX_CONCURRENCY.
+    private static final Semaphore ARGON2_PERMITS = new Semaphore(maxConcurrency(), true);
+
+    private static int maxConcurrency() {
+        String env = System.getenv("AUTH_ARGON2_MAX_CONCURRENCY");
+        if (env != null) {
+            try {
+                int n = Integer.parseInt(env.trim());
+                if (n > 0) {
+                    return n;
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return Math.max(1, Runtime.getRuntime().availableProcessors());
+    }
 
     private Argon2Hasher() {
     }
@@ -78,19 +100,29 @@ public final class Argon2Hasher {
     }
 
     private static byte[] argon2(String rawPassword, byte[] salt, int iterations, int memoryKb, int parallelism, int hashLength, int type) {
-        Argon2Parameters parameters = new Argon2Parameters.Builder(type)
-            .withSalt(salt)
-            .withIterations(iterations)
-            .withMemoryAsKB(memoryKb)
-            .withParallelism(parallelism)
-            .build();
+        try {
+            ARGON2_PERMITS.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Argon2 interrupted while waiting for a permit", e);
+        }
+        try {
+            Argon2Parameters parameters = new Argon2Parameters.Builder(type)
+                .withSalt(salt)
+                .withIterations(iterations)
+                .withMemoryAsKB(memoryKb)
+                .withParallelism(parallelism)
+                .build();
 
-        Argon2BytesGenerator generator = new Argon2BytesGenerator();
-        generator.init(parameters);
+            Argon2BytesGenerator generator = new Argon2BytesGenerator();
+            generator.init(parameters);
 
-        byte[] output = new byte[hashLength];
-        generator.generateBytes(rawPassword.getBytes(StandardCharsets.UTF_8), output);
-        return output;
+            byte[] output = new byte[hashLength];
+            generator.generateBytes(rawPassword.getBytes(StandardCharsets.UTF_8), output);
+            return output;
+        } finally {
+            ARGON2_PERMITS.release();
+        }
     }
 
     private static int parseArgon2Type(String type) {
